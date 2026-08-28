@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Concept B: Strata — 卡片像沉积层一样从泥里升起，底层是墨色的泥 -->
+  <rect width="512" height="512" fill="#f8f5f1"/>
+  <!-- mud (deepest stratum, ink) -->
+  <rect x="116" y="300" width="220" height="140" fill="#23201c"/>
+  <!-- middle stratum -->
+  <rect x="146" y="204" width="220" height="140" fill="#efece7" stroke="#a9a49c" stroke-width="6"/>
+  <!-- top card -->
+  <rect x="176" y="108" width="220" height="140" fill="#f8f5f1" stroke="#23201c" stroke-width="9"/>
+  <rect x="206" y="140" width="90" height="11" fill="#23201c"/>
+  <rect x="206" y="166" width="60" height="8" fill="#a9a49c"/>
+  <path transform="translate(352,154)" fill="#b57f12" d="M0,-24 L5.55,-7.63 L22.83,-7.42 L8.97,2.91 L14.11,19.41 L0,9.43 L-14.11,19.41 L-8.97,2.91 L-22.83,-7.42 L-5.55,-7.63 Z"/>
+</svg>

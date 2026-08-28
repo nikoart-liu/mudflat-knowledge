@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mudflat Knowledge — Logo Concepts</title>
+<style>
+  :root {
+    --paper:#f8f5f1; --panel:#efece7; --selection:#ebe7e0;
+    --hairline:#c7c4bc; --hairline-strong:#a9a49c;
+    --ink:#23201c; --ink-strong:#13110e; --ink-muted:#6d6860;
+    --amber:#b57f12; --amber-wash:#f8f0db;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#262522; color:var(--ink);
+    font-family:-apple-system, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+    padding:48px; display:flex; flex-direction:column; gap:40px; align-items:center;
+  }
+  .board { background:var(--paper); border:1px solid var(--hairline-strong); padding:40px 48px; }
+  .label { font-size:10px; font-weight:700; letter-spacing:0.12em; color:var(--ink-muted); text-transform:uppercase; margin-bottom:20px; }
+  .row { display:flex; align-items:center; gap:36px; }
+  .divider { border-top:1px solid var(--hairline); margin:32px 0; }
+  /* wordmark */
+  .wordmark { display:flex; flex-direction:column; }
+  .wordmark .l1 { font-weight:800; font-size:30px; letter-spacing:0.02em; color:var(--ink-strong); line-height:1.05; }
+  .wordmark .l2 { font-weight:700; font-size:12.5px; letter-spacing:0.42em; color:var(--ink-muted); margin-top:6px; }
+  .wordmark.amber .l2 { color:var(--amber); }
+  .lockup { display:flex; align-items:center; gap:16px; }
+  .lockup img { display:block; }
+  .sizes { display:flex; align-items:flex-end; gap:24px; }
+  .sizes figure { display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .sizes figcaption { font-size:10px; letter-spacing:0.1em; color:var(--ink-muted); font-family:ui-monospace, "SF Mono", Menlo, monospace; }
+</style>
+</head>
+<body>
+
+  <div class="board" style="width:920px;">
+    <div class="label">Concept A — Tide Card 潮线卡</div>
+    <div class="row">
+      <img src="concept-a-tidecard.svg" width="128" height="128">
+      <div class="lockup">
+        <img src="concept-a-tidecard.svg" width="56" height="56">
+        <div class="wordmark"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
+      </div>
+      <div class="lockup">
+        <img src="concept-a-tidecard.svg" width="40" height="40">
+        <div class="wordmark" style="transform:scale(.72); transform-origin:left center;"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="label">Icon sizes — 64 / 32 / 16</div>
+    <div class="sizes">
+      <figure><img src="concept-a-tidecard.svg" width="64" height="64"><figcaption>64</figcaption></figure>
+      <figure><img src="concept-a-tidecard.svg" width="32" height="32"><figcaption>32</figcaption></figure>
+      <figure><img src="concept-a-tidecard.svg" width="16" height="16"><figcaption>16</figcaption></figure>
+    </div>
+  </div>
+
+  <div class="board" style="width:920px;">
+    <div class="label">Concept B — Strata 沉积层</div>
+    <div class="row">
+      <img src="concept-b-strata.svg" width="128" height="128">
+      <div class="lockup">
+        <img src="concept-b-strata.svg" width="56" height="56">
+        <div class="wordmark"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
+      </div>
+      <div class="lockup">
+        <img src="concept-b-strata.svg" width="40" height="40">
+        <div class="wordmark" style="transform:scale(.72); transform-origin:left center;"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="label">Icon sizes — 64 / 32 / 16</div>
+    <div class="sizes">
+      <figure><img src="concept-b-strata.svg" width="64" height="64"><figcaption>64</figcaption></figure>
+      <figure><img src="concept-b-strata.svg" width="32" height="32"><figcaption>32</figcaption></figure>
+      <figure><img src="concept-b-strata.svg" width="16" height="16"><figcaption>16</figcaption></figure>
+    </div>
+  </div>
+
+  <div class="board" style="width:920px;">
+    <div class="label">Concept C — Track 鸟迹</div>
+    <div class="row">
+      <img src="concept-c-track.svg" width="128" height="128">
+      <div class="lockup">
+        <img src="concept-c-track.svg" width="56" height="56">
+        <div class="wordmark"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
+      </div>
+      <div class="lockup">
+        <img src="concept-c-track.svg" width="40" height="40">
+        <div class="wordmark" style="transform:scale(.72); transform-origin:left center;"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="label">Icon sizes — 64 / 32 / 16</div>
+    <div class="sizes">
+      <figure><img src="concept-c-track.svg" width="64" height="64"><figcaption>64</figcaption></figure>
+      <figure><img src="concept-c-track.svg" width="32" height="32"><figcaption>32</figcaption></figure>
+      <figure><img src="concept-c-track.svg" width="16" height="16"><figcaption>16</figcaption></figure>
+    </div>
+  </div>
+
+</body>
+</html>

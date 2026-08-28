@@ -1,0 +1,236 @@
+//! 数据层行为测试：真实 SQLite 文件上的完整回路。
+//!
+//! 覆盖计划验证要点：demo 形态数据入库 → 卡片墙查询 → 中文搜索（FTS 与 LIKE 双路径）→
+//! 标签/星标/补写想法 → 重开连接持久化 → 复习评分 Again 的 10 分钟 due。
+
+use mudflat_knowledge_lib::db::{self, CardFilter, NewBook, UpsertCard};
+use mudflat_knowledge_lib::srs::{self, Rating};
+
+fn tmp_db(name: &str) -> (std::path::PathBuf, rusqlite::Connection) {
+    let dir = std::env::temp_dir().join(format!("mudflat-test-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 先开一次确保 schema 建好，再交由调用方重开使用
+    drop(db::open_db(&dir).unwrap());
+    (dir.clone(), db::open_db(&dir).unwrap())
+}
+
+// 使用 std::env::temp_dir 生成唯一目录
+fn temp_dir_path() -> std::path::PathBuf {
+    std::env::temp_dir()
+}
+
+fn insert_demo_book(conn: &rusqlite::Connection, wid: &str, title: &str, texts: &[&str]) -> i64 {
+    db::upsert_book(
+        conn,
+        &NewBook {
+            weread_book_id: wid.into(),
+            title: title.into(),
+            author: "测试作者".into(),
+            cover: String::new(),
+            reading_progress: 50,
+            note_count: texts.len() as i64,
+            review_count: 0,
+        },
+    )
+    .unwrap();
+    let book_row = db::find_book_row(conn, wid).unwrap().unwrap();
+    for (i, t) in texts.iter().enumerate() {
+        db::upsert_card(
+            conn,
+            &UpsertCard {
+                kind: "highlight",
+                book_row_id: book_row,
+                remote_id: &format!("{wid}-bm-{i}"),
+                chapter_uid: Some(1),
+                chapter_title: Some("第一章"),
+                text: t,
+                abstract_text: None,
+                range_str: Some("100-200"),
+                color_style: (i as i64 % 5) + 1,
+                created_at: 1_700_000_000 + i as i64 * 86400,
+            },
+            1_700_000_000,
+        )
+        .unwrap();
+    }
+    book_row
+}
+
+#[test]
+fn demo_flow_query_search_persist_review() {
+    let (dir, conn) = tmp_db("main");
+
+    // ---- demo 书籍 × 8 划线，第 4 条含「记忆」----
+    insert_demo_book(
+        &conn,
+        "b-1",
+        "记忆的书",
+        &[
+            "大脑如何形成记忆是神经科学的核心问题。",
+            "工作记忆容量有限。",
+            "无关键词句子 alpha。",
+            "另一个句子 beta gamma。",
+            "遗忘曲线与复习节奏。",
+            "无关键词句子 delta。",
+            "间隔重复对抗遗忘。",
+            "第八条普通划线。",
+        ],
+    );
+    let b2 = insert_demo_book(&conn, "b-2", "第二本书", &["别把「记忆」写在这里也行。"]);
+    assert_eq!(db::find_book_row(&conn, "b-2").unwrap().is_some(), true);
+    drop(b2);
+
+    // ---- 卡片墙：24 不要求（此处 9 条），但过滤正确 ----
+    let all = db::query_cards(&conn, &CardFilter::default(), 500, 0).unwrap();
+    assert_eq!(all.len(), 9);
+    assert!(all.iter().all(|c| !c.deleted));
+
+    let by_book = db::query_cards(
+        &conn,
+        &CardFilter { book_id: db::find_book_row(&conn, "b-1").unwrap(), ..CardFilter::default() },
+        500,
+        0,
+    )
+    .unwrap();
+    assert_eq!(by_book.len(), 8);
+
+    // 回归锁定：book_id 必须作为绑定参数而非字面量嵌入 SQL。
+    // b-2 的行 id 为 2 —— 若实现退化为 c.book_id=1，这里会错误返回 b-1 的卡片。
+    let by_book2 = db::query_cards(
+        &conn,
+        &CardFilter { book_id: db::find_book_row(&conn, "b-2").unwrap(), ..CardFilter::default() },
+        500,
+        0,
+    )
+    .unwrap();
+    assert_eq!(by_book2.len(), 1);
+    assert_eq!(by_book2[0].text, "别把「记忆」写在这里也行。");
+
+    // ---- 搜索：≥3 字中文走 FTS；<3 字走 LIKE ----
+    let fts = db::search_cards(&conn, "记忆", &CardFilter::default(), 100).unwrap();
+    // 「记忆」是 2 字 —— 应走 LIKE 路径且命中
+    assert!(!fts.is_empty(), "2 字短词必须能 LIKE 命中");
+    let fts4 = db::search_cards(&conn, "工作记忆", &CardFilter::default(), 100).unwrap();
+    assert_eq!(fts4.len(), 1, "≥3 字子串应精确命中一条");
+    assert_eq!(fts4[0].text, "工作记忆容量有限。");
+
+    // ---- 标签 / 星标 / 补写想法 ----
+    db::add_tag_to_card(&conn, fts4[0].id, "心理学").unwrap();
+    db::set_starred(&conn, fts4[0].id, true).unwrap();
+    db::update_card_note(&conn, fts4[0].id, "这条值得反复读", 1_700_001_000).unwrap();
+
+    let starred = db::query_cards(
+        &conn,
+        &CardFilter { starred_only: true, ..CardFilter::default() },
+        500,
+        0,
+    )
+    .unwrap();
+    assert_eq!(starred.len(), 1);
+    assert_eq!(starred[0].note, "这条值得反复读");
+    assert_eq!(starred[0].tags, vec!["心理学"]);
+
+    let tag_rows = db::list_tags(&conn).unwrap();
+    assert_eq!(tag_rows.len(), 1);
+
+    // ---- 自建卡 + 硬删 ----
+    let self_id = db::create_self_card(&conn, "我的独立卡片", 1_700_002_000).unwrap();
+    assert_eq!(db::query_cards(&conn, &CardFilter::default(), 500, 0).unwrap().len(), 10);
+    db::hard_delete_card(&conn, self_id).unwrap();
+    assert_eq!(db::query_cards(&conn, &CardFilter::default(), 500, 0).unwrap().len(), 9);
+
+    // ---- 复习队列与评分：Again → 10 分钟后到期 ----
+    let now = 1_800_000_000i64;
+    let due_before = db::due_cards(&conn, now, 30).unwrap();
+    assert_eq!(due_before.len(), 9); // 全部新卡默认当期进入队列（自建卡已硬删）
+
+    let st = db::load_review_state(&conn, due_before[0].id).unwrap().unwrap_or_default();
+    let next = srs::schedule(&st, Rating::Again, now);
+    db::save_review_state(&conn, due_before[0].id, &next).unwrap();
+    let reloaded = db::load_review_state(&conn, due_before[0].id).unwrap().unwrap();
+    assert_eq!(reloaded.due_at - reloaded.interval_days as i64 * 86400, now + 600);
+
+    let due_after = db::due_cards(&conn, now, 30).unwrap();
+    assert_eq!(due_after.len(), 8, "Again 的卡 10 分钟内不再出现在当前队列");
+
+    // ---- reconcile：第二次同步少了一条时软删、用户编辑保留 ----
+    let keep = vec!["b-1-bm-0".to_string(), "b-1-bm-1".to_string()];
+    let removed = db::reconcile_cards(&conn, db::find_book_row(&conn, "b-1").unwrap().unwrap(), &keep)
+        .unwrap();
+    assert_eq!(removed, 6);
+    let after_reconcile = db::query_cards(&conn, &CardFilter::default(), 500, 0).unwrap();
+    assert_eq!(after_reconcile.len(), 3); // b-1 剩 2 条 + b-2 的 1 条
+    drop(conn);
+
+    // ---- 重开连接：SQLite 持久化证明 ----
+    let conn2 = db::open_db(&dir).unwrap();
+    let persisted = db::query_cards(&conn2, &CardFilter::default(), 500, 0).unwrap();
+    assert_eq!(persisted.len(), 3);
+    let the_card = persisted.iter().find(|c| c.text == "工作记忆容量有限。").expect("edited card persists");
+    assert!(the_card.starred);
+    assert_eq!(the_card.note, "这条值得反复读");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn upsert_conflict_preserves_user_fields_and_revives_soft_delete() {
+    let (_dir, conn) = tmp_db("conflict");
+    insert_demo_book(&conn, "b-x", "书X", &["原始划线文本"]);
+
+    // 用户改了 note 并软删
+    let card = &db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap()[0];
+    db::update_card_note(&conn, card.id, "用户批注", 111).unwrap();
+    db::soft_delete_card(&conn, card.id).unwrap();
+    assert_eq!(db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap().len(), 0);
+
+    // 下次同步同 remote_id 再次出现：复活为 deleted=0 且保留 note
+    let book_row = db::find_book_row(&conn, "b-x").unwrap().unwrap();
+    db::upsert_card(
+        &conn,
+        &UpsertCard {
+            kind: "highlight",
+            book_row_id: book_row,
+            remote_id: "b-x-bm-0",
+            chapter_uid: Some(1),
+            chapter_title: Some("第一章"),
+            text: "原始划线文本（可能被服务端更新）",
+            abstract_text: None,
+            range_str: Some("100-200"),
+            color_style: 2,
+            created_at: card.created_at,
+        },
+        222,
+    )
+    .unwrap();
+    let revived = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
+    assert_eq!(revived.len(), 1);
+    assert!(!revived[0].deleted);
+    assert_eq!(revived[0].note, "用户批注", "upsert 不得覆盖用户编辑");
+}
+
+#[test]
+fn excluded_card_leaves_review_queue_but_stays_in_wall() {
+    let (_dir, conn) = tmp_db("excluded");
+    insert_demo_book(&conn, "b-e", "书E", &["第一条", "第二条"]);
+    let cards = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
+    db::set_excluded_from_review(&conn, cards[0].id, true).unwrap();
+    let wall = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
+    assert_eq!(wall.len(), 2);
+    let due = db::due_cards(&conn, 1_900_000_000, 30).unwrap();
+    assert_eq!(due.len(), 1, "excluded=0 的卡仍在队列，excluded=1 的不在");
+    assert_eq!(due[0].id, cards[1].id);
+}
+
+#[test]
+fn sync_meta_roundtrip_on_fresh_db() {
+    let (_dir, conn) = tmp_db("sync_meta");
+    assert_eq!(db::get_sync_meta(&conn, "last_full_sync").unwrap(), None);
+    db::set_sync_meta(&conn, "last_full_sync", "1700000000").unwrap();
+    db::set_sync_meta(&conn, "last_full_sync", "1700000500").unwrap();
+    assert_eq!(
+        db::get_sync_meta(&conn, "last_full_sync").unwrap().as_deref(),
+        Some("1700000500"),
+        "upsert 应覆盖旧值"
+    );
+}

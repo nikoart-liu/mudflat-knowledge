@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Concept C: Track — 水鸟留在泥滩上的足迹，天然就是一枚编目印 -->
+  <rect width="512" height="512" fill="#f8f5f1"/>
+  <rect x="116" y="116" width="280" height="280" fill="#f8f0db" stroke="#23201c" stroke-width="9"/>
+  <!-- bird track: three forward toes + hind toe -->
+  <g stroke="#23201c" stroke-width="20" stroke-linecap="square" fill="none">
+    <path d="M 256 306 L 256 196"/>
+    <path d="M 256 306 L 192 250"/>
+    <path d="M 256 306 L 320 250"/>
+    <path d="M 256 306 L 248 356"/>
+  </g>
+  <rect x="236" y="286" width="40" height="40" fill="#23201c"/>
+  <!-- tide hairline under the tile -->
+  <path d="M 116 436 Q 143 424 170 436 T 224 436 T 278 436 T 332 436 T 386 436" fill="none" stroke="#a9a49c" stroke-width="8"/>
+</svg>

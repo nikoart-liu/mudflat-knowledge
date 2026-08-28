@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-27T00:00:00+08:00",
+  "title": "Design System: Mudflat Knowledge",
+  "extensions": {
+    "colorMeta": {
+      "paper": { "role": "neutral", "displayName": "暖纸 Warm Paper", "canonical": "oklch(97.2% 0.006 85)", "tonalRamp": ["#0c0b0a", "#262522", "#44423e", "#63615c", "#85827c", "#a8a59e", "#ccc9c3", "#f0eeea"] },
+      "panel": { "role": "neutral", "displayName": "纸板 Board", "canonical": "oklch(94.5% 0.008 85)", "tonalRamp": ["#141210", "#33302c", "#54504a", "#757169", "#97928a", "#bab4ab", "#ddd7ce", "#f6f2ec"] },
+      "selection": { "role": "neutral", "displayName": "石蜡 Paraffin", "canonical": "oklch(93% 0.01 85)", "tonalRamp": ["#161411", "#38352f", "#5b574f", "#7f7a71", "#a29c92", "#c6c0b5", "#e3ded4", "#faf6ef"] },
+      "hairline": { "role": "neutral", "displayName": "发丝线 Hairline", "canonical": "oklch(82% 0.011 85)" },
+      "hairline-strong": { "role": "neutral", "displayName": "深发丝线 Hairline Strong", "canonical": "oklch(72% 0.013 80)" },
+      "ink": { "role": "neutral", "displayName": "墨 Ink", "canonical": "oklch(24.5% 0.009 80)", "tonalRamp": ["#0c0b0a", "#272522", "#44423d", "#64615b", "#86827a", "#a9a49d", "#cdc8c2", "#f1eee9"] },
+      "ink-strong": { "role": "neutral", "displayName": "焦墨 Soot Ink", "canonical": "oklch(18% 0.007 80)" },
+      "ink-muted": { "role": "neutral", "displayName": "灰墨 Ash Ink", "canonical": "oklch(52% 0.014 80)" },
+      "ember-amber": { "role": "primary", "displayName": "烬火琥珀 Ember Amber", "canonical": "oklch(63.5% 0.128 78)", "tonalRamp": ["#140900", "#352000", "#5b3a00", "#845700", "#ab7700", "#d09a3e", "#f0c175", "#ffe8b0"] },
+      "ember-deep": { "role": "primary", "displayName": "琥珀加深 Ember Deep", "canonical": "oklch(55% 0.115 74)" },
+      "ember-wash": { "role": "primary", "displayName": "琥珀晕染 Ember Wash", "canonical": "oklch(95.5% 0.028 88)" },
+      "grade-again": { "role": "secondary", "displayName": "朱砂褪印 Cinnabar Ghost", "canonical": "oklch(55% 0.16 28)" },
+      "grade-good": { "role": "secondary", "displayName": "青苔绿 Moss Green", "canonical": "oklch(55% 0.11 150)" },
+      "grade-easy": { "role": "secondary", "displayName": "黛蓝 Indigo Blue", "canonical": "oklch(50% 0.1 250)" }
+    },
+    "typographyMeta": {
+      "reading": { "displayName": "阅读级", "purpose": "每日回顾抽卡正文的最高优先级排版。" },
+      "emphasized-body": { "displayName": "自述级", "purpose": "用户自己写的想法卡，比借来的划线更响。" },
+      "body": { "displayName": "正文级", "purpose": "卡片墙划线文本默认等级。" },
+      "label": { "displayName": "眉标级", "purpose": "区块小标与设置分组头。" },
+      "meta-mono": { "displayName": "编目级", "purpose": "出处、日期、计数的编目化元数据。" }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "ease-exit-quart", "value": "cubic-bezier(0.25, 1, 0.5, 1)", "purpose": "如需状态过渡，只允许指数型 ease-out 曲线；静止表面不做入场编排。" },
+      { "name": "duration-fast", "value": "120ms", "purpose": "hover 与颜色位移的时长上限。" }
+    ],
+    "breakpoints": [
+      { "name": "wall-two-col", "value": "1100px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "确认与保存。焦墨实底，主按钮用墨不用金。",
+      "html": "<button class=\"ds-btn-primary\">同步</button>",
+      "css": ".ds-btn-primary { background: #23201c; color: #f8f5f1; border: 1px solid #23201c; border-radius: 2px; padding: 5px 11px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; cursor: pointer; transition: background 120ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-btn-primary:hover { background: #13110e; border-color: #13110e; } .ds-btn-primary:focus-visible { outline: 2px solid #b57f12; outline-offset: 1px; } .ds-btn-primary:disabled { opacity: 0.4; cursor: default; }"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "次级操作：纸底发丝边框，hover 时边框转墨。",
+      "html": "<button class=\"ds-btn-default\">测试连接</button>",
+      "css": ".ds-btn-default { background: #f8f5f1; color: #23201c; border: 1px solid #c7c4bc; border-radius: 2px; padding: 5px 11px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; cursor: pointer; transition: border-color 120ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-btn-default:hover:not(:disabled) { border-color: #23201c; } .ds-btn-default:focus-visible { outline: 2px solid #b57f12; outline-offset: 1px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "工具行快捷操作；激活态染石蜡底。",
+      "html": "<div style=\"display:flex; gap:4px;\"><button class=\"ds-btn-ghost ds-active\">墙</button><button class=\"ds-btn-ghost\">列表</button></div>",
+      "css": ".ds-btn-ghost { border: none; background: transparent; color: #6d6860; border-radius: 2px; padding: 4px 10px; font-size: 12px; cursor: pointer; } .ds-btn-ghost:hover:not(:disabled) { color: #23201c; } .ds-btn-ghost:focus-visible { outline: 2px solid #b57f12; outline-offset: 1px; } .ds-btn-ghost.ds-active { color: #23201c; background: #ebe7e0; }"
+    },
+    {
+      "name": "Filter Chip",
+      "kind": "chip",
+      "refersTo": "chip-filter",
+      "description": "书名标签筛选；选中反转为焦墨实底。",
+      "html": "<span class=\"ds-chip\">新书签名会</span> <span class=\"ds-chip ds-chip-on\">已精选</span>",
+      "css": ".ds-chip { display: inline-block; padding: 1px 6px; margin-right: 4px; border: 1px solid #c7c4bc; border-radius: 2px; font-size: 10px; letter-spacing: 0.05em; background: #ebe7e0; color: #6d6860; cursor: pointer; transition: background 120ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-chip:hover { border-color: #23201c; } .ds-chip-on { background: #23201c; color: #f8f5f1; border-color: #23201c; }"
+    },
+    {
+      "name": "Search Input",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "顶栏全文搜索；聚焦时边框转墨、底色回暖纸。",
+      "html": "<input class=\"ds-input\" placeholder=\"搜索划线与想法…\" />",
+      "css": ".ds-input { width: 100%; max-width: 340px; padding: 4px 8px; border: 1px solid #c7c4bc; border-radius: 2px; background: #efece7; color: #23201c; font-size: 12px; font-family: inherit; } .ds-input::placeholder { color: #6d6860; opacity: 0.7; } .ds-input:focus { outline: none; border-color: #23201c; background: #f8f5f1; }"
+    },
+    {
+      "name": "Sidebar Item",
+      "kind": "nav",
+      "refersTo": "side-item",
+      "description": "侧栏书本行：mono 编目计数，激活用石蜡底不配彩条。",
+      "html": "<div style=\"width:220px; background:#efece7; border:1px solid #c7c4bc;\"><button class=\"ds-side-item\"><span class=\"ds-grow\">风之谷的陌生人</span><span class=\"ds-count\">142</span></button><button class=\"ds-side-item ds-side-on\"><span class=\"ds-grow\">夜航西飞</span><span class=\"ds-count\">87</span></button></div>",
+      "css": ".ds-side-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 12px; border: none; border-radius: 0; background: transparent; text-align: left; font-size: 12px; color: #23201c; cursor: pointer; overflow: hidden; white-space: nowrap; } .ds-side-item:hover { background: #ebe7e0; } .ds-side-on { background: #ebe7e0; font-weight: 600; } .ds-grow { flex: 1; overflow: hidden; text-overflow: ellipsis; } .ds-count { font-family: ui-monospace, SF Mono, Menlo, monospace; font-size: 10px; font-variant-numeric: tabular-nums; color: #6d6860; }"
+    },
+    {
+      "name": "Wall Card",
+      "kind": "card",
+      "refersTo": "card-wall",
+      "description": "卡片墙网格单元：无边框卡体，发丝线由墙体共享。",
+      "html": "<div class=\"ds-wall\"><article class=\"ds-card\"><p class=\"ds-card-text\">我记得那本相册夹在地理书的第几页之间，像一枚被遗忘的书签。</p><div class=\"ds-card-meta\"><span class=\"ds-source\">《我与地坛》 史铁生</span><span class=\"ds-date\">2026-08-21 · 09:42</span></div></article></div>",
+      "css": ".ds-wall { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-left: 1px solid #c7c4bc; } .ds-card { position: relative; padding: 20px 24px; background: #f8f5f1; border-right: 1px solid #c7c4bc; border-bottom: 1px solid #c7c4bc; transition: background 120ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-card:hover { background: #ebe7e0; } .ds-card-text { margin: 0; font-size: 14px; line-height: 1.65; letter-spacing: -0.01em; color: #23201c; } .ds-card-meta { margin-top: 16px; display: flex; flex-direction: column; gap: 3px; } .ds-source { font-size: 11px; letter-spacing: 0.03em; color: #6d6860; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-date { font-family: ui-monospace, SF Mono, Menlo, monospace; font-size: 10px; font-variant-numeric: tabular-nums; color: #6d6860; }"
+    },
+    {
+      "name": "Thought Card",
+      "kind": "card",
+      "refersTo": "card-starred",
+      "description": "自建想法卡：琥珀晕染底色是身份差异的第一信号，正文更重。",
+      "html": "<div class=\"ds-wall2\"><article class=\"ds-thought\"><p class=\"ds-thought-text\">重读这一页时想把它抄进日记里。</p></article></div>",
+      "css": ".ds-wall2 { border-left: 1px solid #c7c4bc; } .ds-thought { padding: 20px 24px; background: #f8f0db; border-right: 1px solid #c7c4bc; border-bottom: 1px solid #c7c4bc; } .ds-thought:hover { background: #f4ead2; } .ds-thought-text { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.55; color: #23201c; }"
+    },
+    {
+      "name": "Review Grade Bar",
+      "kind": "custom",
+      "refersTo": "review-card",
+      "description": "复习评级的描边级四色：系统里唯一允许多色并存的地方。",
+      "html": "<div class=\"ds-grades\"><button class=\"ds-g-again\">再次</button><button class=\"ds-g-hard\">困难</button><button class=\"ds-g-good\">良好</button><button class=\"ds-g-easy\">容易</button></div>",
+      "css": ".ds-grades { display: flex; gap: 8px; width: 100%; } .ds-grades button { flex: 1; padding: 11px 0; font-size: 12px; font-weight: 700; border: 1px solid #a9a49c; border-radius: 2px; background: #f8f5f1; cursor: pointer; transition: background 120ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-grades button:hover { background: #ebe7e0; } .ds-g-again { border-color: #bd4238 !important; color: #bd4238; } .ds-g-hard { border-color: #996605 !important; color: #996605; } .ds-g-good { border-color: #3b834e !important; color: #3b834e; } .ds-g-easy { border-color: #32669a !important; color: #32669a; }"
+    },
+    {
+      "name": "Toast",
+      "kind": "custom",
+      "refersTo": "toast",
+      "description": "底部居中的墨色回执条。",
+      "html": "<div style=\"position:relative; height:64px;\"><div class=\"ds-toast\">已保存到钥匙串</div></div>",
+      "css": ".ds-toast { position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; background: #23201c; color: #f8f5f1; padding: 9px 16px; font-size: 12px; border-radius: 2px; max-width: 70vw; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "藏书人的索引柜（The Annotated Card Catalog）",
+    "overview": "整个界面是一座藏书人亲手维护的索引柜：柜架是严格对齐的瑞士网格，抽屉之间只有发丝线；每一张卡都是一张写满批注的索引卡，mono 字体的书号与日期像图书馆编目一样冷静地钉在角落。金色只出现在藏书人真正下笔承诺的地方：一颗星标、一个选中态、一次确认。\n\n系统性格是融合产物：网格即秩序，纸墨即温度。结构上寸土必争地对齐（发丝分割线、锐角 2px 半径、无阴影、mono 元数据），底色上保留旧书的呼吸（暖纸中性色整体染向品牌金的颜色相）。界面密度优先：单屏尽量多卡，但密度靠排版达成，从不靠压缩文字或缩小行距。\n\n这套系统明确拒绝四样东西：「AI 风」模板感、SaaS 暗色仪表盘风、过度复古做旧、花哨干扰元素。",
+    "keyCharacteristics": [
+      "暖纸底色 × 冷静发丝线：所有结构由 1px 线与色调层进承担，没有任何阴影",
+      "全局锐角：圆角统一 2px 或直角，装饰性大圆角禁止出现",
+      "金色 ≤ 视觉面积 5%，只在语义承诺处现身",
+      "中文正文为王：高亮文本是页面对比最强的元素",
+      "元数据编目化：mono、tabular-nums、小字号、低对比但不失辨识"
+    ],
+    "rules": [
+      { "name": "承诺金规则 The Pledge Gold Rule", "body": "烬火琥珀只在需要承诺的交互处出现：星标、选中、主动作确认、引用溯源。装饰性使用金色是被禁止的；它少，所以准。", "section": "colors" },
+      { "name": "发丝承重规则 The Hairline Structure Rule", "body": "所有层级与结构信息由 1px 发丝线和相邻色调差承担。阴影永远不可用；如果一个区块显得太轻，加一条深发丝线或退一层纸色，而不是投阴影。", "section": "colors" },
+      { "name": "正文为王规则 The Content Is King Rule", "body": "任何页面上对比最强的元素必须是内容文本（划线或想法）。chrome 文本不得超过 14px、不得重于 500；违反即重做。", "section": "typography" },
+      { "name": "阅读呼吸规则 The Reading Breath Rule", "body": "凡承担连续中文段落阅读的区域，行高不低于 1.65，回顾场景固定 1.9。密度不足时缩窄侧栏、增加栏数，永不压缩行距。", "section": "typography" },
+      { "name": "平面承重规则 The Flat Load-Bearing Rule", "body": "表面在静止状态永远是平的。任何新组件如果看起来需要阴影来浮起来，说明它的边界定义失败；回到发丝线重画边界。唯一的例外是弹层遮罩。", "section": "elevation" }
+    ],
+    "dos": [
+      "Do 保持整体单主题浅色暖纸基调；新增表面必须落在 paper / panel / selection 三阶之一",
+      "Do 让所有结构与层级走发丝线 + 色调差，唯一允许的遮罩是弹层的 rgba(35,32,28,0.45)",
+      "Do 把金色 (#b57f12) 当作承诺预算花：每个屏幕的金色区域合计不超过视觉面积的 5%",
+      "Do 为连续中文正文保住 1.65 以上的行高和 65–75ch 的行长上限；回顾正文 1.9",
+      "Do 用 mono 编目体书写一切元数据（出处、日期、计数），保持 tabular-nums",
+      "Do 保留用户五色划线的高亮语义映射（1 绿 2 紫 3 黄 4 蓝 5 红），它们是数据契约"
+    ],
+    "donts": [
+      "Don't 出现「AI 风」模板感：emoji 当图标、千篇一律浅底圆角卡片、模板化布局，全部明令禁止",
+      "Don't 使用 SaaS 暗色仪表盘风：深底蓝光、渐变、玻璃拟态一律禁止；本系统没有暗色变体",
+      "Don't 过度复古做旧：宋体大字报式怀旧或仿真纸质拟物都不许；工具感不能丢",
+      "Don't 引入花哨干扰元素：多彩标签云、装饰性噪点纹理、抢注意力的动效都在禁区",
+      "Don't 在卡片、列表项、引用上用大于 1px 的彩色侧边条纹充当强调",
+      "Don't 用纯黑 #000 或纯白 #fff；最深的格子是焦墨 #13110e，最亮的是暖纸 #f8f5f1",
+      "Don't 给任何静止表面添加阴影或模糊"
+    ]
+  }
+}

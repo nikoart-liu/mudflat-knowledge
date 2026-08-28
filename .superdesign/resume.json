@@ -1,0 +1,39 @@
+{
+  "project": {
+    "id": "16e75b5c-8162-411d-a054-4cfc1ab35a7e",
+    "title": "Mudflat Knowledge UI Redesign",
+    "canvas": "https://superdesign.dev/teams/0d40cad8-8a7f-482b-9510-8ee3181326cd/projects/16e75b5c-8162-411d-a054-4cfc1ab35a7e"
+  },
+  "targets": [
+    {
+      "name": "card-wall",
+      "kind": "existing-ui",
+      "description": "App.tsx 单文件应用的卡片墙主视图（含顶栏/侧栏壳）",
+      "baselineDraftId": "d55c4751-9750-4770-a755-edb47a4b008c",
+      "activeDraftId": "42ff75d6-701a-407e-a560-abc87820a5ea",
+      "branches": [
+        {
+          "draftId": "6734b9dd-9ed8-43ab-ad04-175320508633",
+          "label": "纸质文人书房版",
+          "preview": "https://p.superdesign.dev/draft/6734b9dd-9ed8-43ab-ad04-175320508633"
+        },
+        {
+          "draftId": "42ff75d6-701a-407e-a560-abc87820a5ea",
+          "label": "瑞士网格专业版",
+          "preview": "https://p.superdesign.dev/draft/42ff75d6-701a-407e-a560-abc87820a5ea",
+          "versions": [
+            "v1 初版",
+            "v2 增加封面图"
+          ]
+        }
+      ],
+      "contextBundle": [
+        ".superdesign/design-system.md",
+        "src/App.tsx",
+        "src/App.css"
+      ],
+      "initComplete": true,
+      "activeLabel": "瑞士网格专业版 v2（含图书封面）"
+    }
+  ]
+}
