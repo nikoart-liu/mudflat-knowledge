@@ -7,18 +7,18 @@ import {
   type CardFilter,
   type CardRow,
   type SettingsInfo,
+  type SetupStatus,
   type SyncEventPayload,
   type SyncSummary,
   type TagRow,
 } from './types';
 import './App.css';
 
-type View =
-  | { name: 'cards'; bookId: number | null }
-  | { name: 'review' }
-  | { name: 'settings' };
+type CardsView = { name: 'cards'; bookId: number | null };
+type View = CardsView | { name: 'review' } | { name: 'settings' };
 
-
+const PAGE = 500;
+const SEARCH_CAP = 200;
 
 function fmtDate(unix: number): string {
   const d = new Date(unix * 1000);
@@ -26,7 +26,21 @@ function fmtDate(unix: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-// 内联线性图标（lucide 描边路径），离线可用
+function explainError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const s = raw.replace(/^Error:\s*/, '');
+  if (/transformCallback|Cannot read properties of undefined|IPC|invoke/i.test(s)) {
+    return '现在连不上本地服务。请用应用窗口打开，不要用浏览器。';
+  }
+  if (/尚未保存 API Key/.test(s)) {
+    return '还没有 Key。到设置里粘贴以 wrk- 开头的微信读书 API Key。';
+  }
+  if (/读取 API Key 失败/.test(s)) {
+    return '读钥匙串失败。到设置里重新保存 API Key。';
+  }
+  return s;
+}
+
 const ICON_PATHS: Record<string, string> = {
   layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
@@ -48,14 +62,17 @@ function Icon({ name, size = 14 }: { name: keyof typeof ICON_PATHS | string; siz
   );
 }
 
-// 封面：<img> 加载失败回退为竖排书名占位块
 function Cover({ src, title, large }: { src: string; title: string; large?: boolean }) {
   const [failed, setFailed] = useState(false);
   const cls = large ? 'cover-lg' : 'cover-box';
-  if (!src || failed) {
-    return <div className={cls} style={{ background: large ? 'var(--ember-wash)' : undefined }}><span className="cover-fallback">{title.slice(0, large ? 8 : 4)}</span></div>;
-  }
-  return <div className={cls}><img src={src} alt="" loading="lazy" onError={() => setFailed(true)} /></div>;
+  const showImg = src && !failed;
+  return (
+    <div className={cls} style={{ background: large && !showImg ? 'var(--ember-wash)' : undefined }} aria-hidden={large ? undefined : true}>
+      {showImg
+        ? <img src={src} alt={large ? title : ''} loading="lazy" onError={() => setFailed(true)} />
+        : <span className="cover-fallback">{title.slice(0, large ? 8 : 4)}</span>}
+    </div>
+  );
 }
 
 export default function App() {
@@ -66,16 +83,27 @@ export default function App() {
   const [starredOnly, setStarredOnly] = useState(false);
   const [query, setQuery] = useState('');
   const [cards, setCards] = useState<CardRow[]>([]);
+  const [cardTotal, setCardTotal] = useState(0);
+  const [cardsReady, setCardsReady] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [editing, setEditing] = useState<CardRow | null>(null);
   const [creating, setCreating] = useState(false);
   const [tagToDelete, setTagToDelete] = useState<TagRow | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [dueCount, setDueCount] = useState(0);
+  const [setup, setSetup] = useState<SetupStatus | null>(null);
   const contentHeaderRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [chH, setChH] = useState(76);
+  const lastViewRef = useRef<Exclude<View, { name: 'settings' }>>({ name: 'cards', bookId: null });
 
-  // 分组吸顶钉在 content-header 下缘；其高度随视图（书目头图/搜索头）变化
+  const searching = !!query.trim();
+  const hasKey = setup?.hasKey ?? false;
+  const hasBooks = setup?.hasBooks ?? false;
+  const emptyLibrary = !hasBooks && cards.length === 0 && !searching;
+  const hideFab = emptyLibrary;
+
   useEffect(() => {
     const el = contentHeaderRef.current;
     if (!el) return;
@@ -90,49 +118,97 @@ export default function App() {
   }, []);
 
   const refreshMeta = useCallback(async () => {
-    setBooks(await call<BookRow[]>('list_books'));
-    setTags(await call<TagRow[]>('list_tags'));
-    call<number>('get_due_count').then(setDueCount).catch(() => {});
+    const [bookRows, tagRows, due, status] = await Promise.all([
+      call<BookRow[]>('list_books'),
+      call<TagRow[]>('list_tags'),
+      call<number>('get_due_count').catch(() => 0),
+      call<SetupStatus>('get_setup_status'),
+    ]);
+    setBooks(bookRows);
+    setTags(tagRows);
+    setDueCount(due);
+    setSetup(status);
   }, []);
 
-  // 卡片重载：任何卡片级变更（加星/删除/编辑/搜索词）后走这里，保持列表与 DB 一致
+  const wallFilter = useCallback((): CardFilter => ({
+    ...emptyFilter(),
+    bookId: view.name === 'cards' ? view.bookId : null,
+    tagIds: selectedTagIds,
+    starredOnly,
+  }), [view, selectedTagIds, starredOnly]);
+
   const reloadCards = useCallback(async () => {
     if (view.name !== 'cards') return;
     const q = query.trim();
-    if (q) {
-      setCards(await call<CardRow[]>('search_cards', { q, filter: emptyFilter() }));
-      return;
+    try {
+      if (q) {
+        const rows = await call<CardRow[]>('search_cards', { q, filter: emptyFilter() });
+        setCards(rows);
+        setCardTotal(rows.length);
+        return;
+      }
+      const filter = wallFilter();
+      const [rows, total] = await Promise.all([
+        call<CardRow[]>('query_cards', { filter, limit: PAGE, offset: 0 }),
+        call<number>('count_cards', { filter }),
+      ]);
+      setCards(rows);
+      setCardTotal(total);
+    } finally {
+      setCardsReady(true);
     }
-    const filter: CardFilter = {
-      ...emptyFilter(),
-      bookId: view.bookId,
-      tagIds: selectedTagIds,
-      starredOnly,
-    };
-    setCards(await call<CardRow[]>('query_cards', { filter, limit: 500, offset: 0 }));
-  }, [view, query, selectedTagIds, starredOnly]);
+  }, [view, query, wallFilter]);
+
+  const loadMore = async () => {
+    if (searching || loadingMore || cards.length >= cardTotal) return;
+    setLoadingMore(true);
+    try {
+      const filter = wallFilter();
+      const rows = await call<CardRow[]>('query_cards', { filter, limit: PAGE, offset: cards.length });
+      setCards((prev) => [...prev, ...rows]);
+    } catch (e) {
+      showToast(explainError(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   useEffect(() => {
-    refreshMeta().catch((e) => showToast(String(e)));
+    refreshMeta().catch((e) => showToast(explainError(e)));
   }, [refreshMeta, showToast]);
 
-  // 卡片加载：reloadCards 的依赖（view / 标签 / 星标 / 搜索词）变化触发
   useEffect(() => {
-    if (query.trim()) return; // 搜索词非空时由下方 debounce 分支接管
-    reloadCards().catch((e) => showToast(String(e)));
+    if (query.trim()) return;
+    reloadCards().catch((e) => showToast(explainError(e)));
   }, [reloadCards, showToast]);
 
-  // 搜索：debounce 250ms
   useEffect(() => {
     if (view.name !== 'cards' || !query.trim()) return;
     const t = window.setTimeout(() => {
-      reloadCards().catch((e) => showToast(String(e)));
+      reloadCards().catch((e) => showToast(explainError(e)));
     }, 250);
     return () => window.clearTimeout(t);
   }, [query, view, reloadCards, showToast]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && view.name === 'cards') {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view.name]);
 
   const doSync = useCallback(async () => {
+    if (!hasKey) {
+      showToast('还没有 Key。到设置里粘贴以 wrk- 开头的微信读书 API Key。');
+      setView({ name: 'settings' });
+      return;
+    }
     setSyncing('准备同步…');
     try {
       const chan = new Channel<SyncEventPayload>();
@@ -146,17 +222,15 @@ export default function App() {
       await refreshMeta();
       await reloadCards();
     } catch (e) {
-      showToast(`同步失败：${String(e)}`);
+      showToast(explainError(e));
     } finally {
       setSyncing(null);
     }
-  }, [refreshMeta, reloadCards, showToast]);
+  }, [hasKey, refreshMeta, reloadCards, showToast]);
 
   const toggleTagFilter = (id: number) =>
     setSelectedTagIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
-  // 删除标签：后端级联清掉 card_tags；selectedTagIds 换新数组引用必然触发
-  // reloadCards 依赖链，卡片列表按新选中集刷新，无需手动调用
   const deleteTag = async (t: TagRow) => {
     try {
       await call('delete_tag', { tagId: t.id });
@@ -164,15 +238,38 @@ export default function App() {
       await refreshMeta();
       showToast(`已删除标签「${t.name}」`);
     } catch (e) {
-      showToast(String(e));
+      showToast(explainError(e));
     }
   };
 
-  const activeBook = view.name === 'cards' && view.bookId ? books.find((b) => b.id === view.bookId) : null;
+  const clearFilters = () => {
+    setQuery('');
+    setStarredOnly(false);
+    setSelectedTagIds([]);
+    setView({ name: 'cards', bookId: null });
+  };
 
-  // 卡片墙分组地标：全部视图按书、单书视图按月；搜索结果保持相关性平铺
+  const toggleSettings = () => {
+    if (view.name === 'settings') {
+      setView(lastViewRef.current);
+      return;
+    }
+    lastViewRef.current = view.name === 'review' ? { name: 'review' } : { name: 'cards', bookId: view.bookId };
+    setView({ name: 'settings' });
+  };
+
+  const goCards = (bookId: number | null) => {
+    setQuery('');
+    setView({ name: 'cards', bookId });
+  };
+
+  const activeBook = !searching && view.name === 'cards' && view.bookId
+    ? books.find((b) => b.id === view.bookId) ?? null
+    : null;
+  const filtered = starredOnly || selectedTagIds.length > 0 || (view.name === 'cards' && view.bookId !== null);
+
   const wallGroups = useMemo(() => {
-    if (view.name !== 'cards' || query.trim()) return null;
+    if (view.name !== 'cards' || searching) return null;
     const byBook = !view.bookId;
     const map = new Map<string, { key: string; label: string; mono: boolean; cards: CardRow[] }>();
     for (const c of cards) {
@@ -191,33 +288,53 @@ export default function App() {
       g.cards.push(c);
     }
     return [...map.values()];
-  }, [cards, view, query]);
+  }, [cards, view, searching]);
+
+  const countLabel = (() => {
+    if (searching) {
+      if (cards.length >= SEARCH_CAP) return `前 ${SEARCH_CAP} 条，请把词写得更具体`;
+      return `${cards.length} 张 · 正在搜全部卡片`;
+    }
+    if (cardTotal > cards.length) return `已显示 ${cards.length} / 共 ${cardTotal}`;
+    return `${cards.length} 张`;
+  })();
+
+  const reviewing = view.name === 'review';
 
   return (
-    <div className="app">
+    <div className={`app${reviewing ? ' is-review' : ''}`}>
       <header className="topbar">
         <div className="logo">
-          <span className="mark"><Icon name="layers" size={15} /></span>
-          <span>MUDFLAT KNOWLEDGE</span>
+          <img className="mark" src="/logo-mark.svg" width={18} height={18} alt="" />
+          <span>泥滩知识</span>
         </div>
         <div className="search">
           <Icon name="search" size={13} />
           <input
-            placeholder="检索卡片全文…"
-            aria-label="检索卡片全文"
+            ref={searchRef}
+            type="search"
+            placeholder="检索全部卡片…"
+            aria-label="检索全部卡片，按 / 聚焦"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Escape' && setQuery('')}
           />
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
-          <button className="primary" disabled={!!syncing} onClick={doSync}>{syncing ?? '同步'}</button>
+        <div className="top-actions">
+          <button
+            className="primary top-sync"
+            disabled={!!syncing || !hasKey}
+            title={!hasKey ? '请先到设置填写 API Key' : undefined}
+            onClick={doSync}
+          >
+            {syncing ?? '同步'}
+          </button>
           <button
             className={`ghost ${view.name === 'settings' ? 'active' : ''}`}
-            onClick={() => setView({ name: 'settings' })}
+            onClick={toggleSettings}
             title="设置"
             aria-label="设置"
-            aria-current={view.name === 'settings' ? 'true' : undefined}
+            aria-pressed={view.name === 'settings'}
           >
             <Icon name="gear" size={14} />
           </button>
@@ -227,7 +344,6 @@ export default function App() {
       <div className="body">
         <aside className="sidebar">
           <section className="side-group side-review">
-            <h2>Flip / 翻牌</h2>
             <button
               className={`side-item review-cta${dueCount > 0 ? ' due' : ''}${view.name === 'review' ? ' active' : ''}`}
               onClick={() => setView({ name: 'review' })}
@@ -241,18 +357,18 @@ export default function App() {
           </section>
           <div className="side-scroll">
             <section className="side-group">
-              <h2>Library / 书架</h2>
+              <h2>书架</h2>
               <button
-                className={`side-item ${view.name === 'cards' && !view.bookId ? 'active' : ''}`}
-                aria-current={view.name === 'cards' && !view.bookId ? 'true' : undefined}
-                onClick={() => { setQuery(''); setView({ name: 'cards', bookId: null }); }}
+                className={`side-item ${!searching && view.name === 'cards' && !view.bookId ? 'active' : ''}`}
+                aria-current={!searching && view.name === 'cards' && !view.bookId ? 'true' : undefined}
+                onClick={() => goCards(null)}
               >
                 <Icon name="layers" size={13} />
                 <span className="grow">全部卡片</span>
                 <span className="count">{books.reduce((n, b) => n + b.noteCount + b.reviewCount, 0)}</span>
               </button>
               <button
-                className={`side-item ${starredOnly ? 'active' : ''}`}
+                className={`side-item ${!searching && starredOnly ? 'active' : ''}`}
                 onClick={() => setStarredOnly((v) => !v)}
                 aria-pressed={starredOnly}
                 title="只看星标卡片"
@@ -263,9 +379,9 @@ export default function App() {
               {books.map((b) => (
                 <button
                   key={b.id}
-                  className={`side-item ${view.name === 'cards' && view.bookId === b.id ? 'active' : ''}`}
-                  aria-current={view.name === 'cards' && view.bookId === b.id ? 'true' : undefined}
-                  onClick={() => { setQuery(''); setView({ name: 'cards', bookId: b.id }); }}
+                  className={`side-item ${!searching && view.name === 'cards' && view.bookId === b.id ? 'active' : ''}`}
+                  aria-current={!searching && view.name === 'cards' && view.bookId === b.id ? 'true' : undefined}
+                  onClick={() => goCards(b.id)}
                   title={b.title}
                 >
                   <Cover src={b.cover} title={b.title} />
@@ -275,14 +391,13 @@ export default function App() {
               ))}
             </section>
           </div>
-          {/* 底固定区：标签筛选常驻可见 */}
           <section className="side-group side-tags">
-            <h2>Tags / 标签</h2>
+            <h2>标签</h2>
             <div className="tag-cloud">
               {tags.map((t) => (
                 <span key={t.id} className="chip-item">
                   <button
-                    className={`chip ${selectedTagIds.includes(t.id) ? 'active' : ''}`}
+                    className={`chip ${!searching && selectedTagIds.includes(t.id) ? 'active' : ''}`}
                     aria-pressed={selectedTagIds.includes(t.id)}
                     onClick={() => toggleTagFilter(t.id)}
                   >
@@ -308,33 +423,39 @@ export default function App() {
             <>
               <div className="content-header" ref={contentHeaderRef}>
                 <div className="head-left">
-                  {activeBook ? (
+                  {searching ? (
+                    <div style={{ minWidth: 0 }}>
+                      <h2>「{query.trim()}」</h2>
+                      <div className="head-meta"><span className="card-date">{countLabel}</span></div>
+                    </div>
+                  ) : activeBook ? (
                     <>
                       <Cover src={activeBook.cover} title={activeBook.title} large />
                       <div style={{ minWidth: 0 }}>
-                        <div className="eyebrow">Reading Library / {activeBook.author || '佚名'}</div>
                         <h2>{activeBook.title}</h2>
                         <div className="head-meta">
+                          <span>{activeBook.author || '佚名'}</span>
                           <span className="chip">划线 {activeBook.noteCount}</span>
                           <span className="chip">想法 {activeBook.reviewCount}</span>
-                          <span className="card-date">{cards.length} shown</span>
+                          <span className="card-date">{countLabel}</span>
                         </div>
                       </div>
                     </>
                   ) : (
                     <div style={{ minWidth: 0 }}>
-                      {query && <div className="eyebrow">Search / 搜索结果</div>}
-                      <h2>{query ? `“${query}”` : '全部卡片'}</h2>
-                      <div className="head-meta"><span className="card-date">{cards.length} shown</span></div>
+                      <h2>{starredOnly ? '星标卡片' : '全部卡片'}</h2>
+                      <div className="head-meta"><span className="card-date">{countLabel}</span></div>
                     </div>
                   )}
                 </div>
-                <button className="fab" title="新建卡片" aria-label="新建卡片" onClick={() => setCreating(true)}>
-                  <Icon name="plus" size={16} />
-                </button>
+                {!hideFab && (
+                  <button className="fab" title="新建卡片" aria-label="新建卡片" onClick={() => setCreating(true)}>
+                    <Icon name="plus" size={16} />
+                  </button>
+                )}
               </div>
               <div className="wall" style={{ '--ch-h': `${chH}px` } as React.CSSProperties}>
-                {wallGroups
+                {cards.length > 0 && (wallGroups
                   ? wallGroups.map((g) => (
                     <section className="wall-group" key={g.key}>
                       <div className="wall-group-head">
@@ -350,15 +471,46 @@ export default function App() {
                     {cards.map((c) => (
                       <Card key={c.id} card={c} onEdit={() => setEditing(c)} onChanged={reloadCards} onToast={showToast} />
                     ))}
-                  </section>}
-                {!cards.length && <p className="hint empty-state">没有匹配的卡片。</p>}
+                  </section>)}
+                {cards.length > 0 && cards.length < cardTotal && !searching && (
+                  <div className="wall-more">
+                    <span className="mono">{countLabel}</span>
+                    <button onClick={loadMore} disabled={loadingMore}>{loadingMore ? '载入中…' : '继续载入'}</button>
+                  </div>
+                )}
+                {!cards.length && (
+                  <EmptyWall
+                    ready={cardsReady}
+                    needsSetup={emptyLibrary && !hasKey}
+                    hasKey={hasKey}
+                    hasBooks={hasBooks}
+                    searching={searching}
+                    filtered={filtered}
+                    query={query.trim()}
+                    syncing={syncing}
+                    onSetup={() => setView({ name: 'settings' })}
+                    onSync={doSync}
+                    onClear={clearFilters}
+                  />
+                )}
               </div>
             </>
           )}
           {view.name === 'review' && (
-            <ReviewView onToast={showToast} onExit={() => { refreshMeta(); setView({ name: 'cards', bookId: null }); }} />
+            <ReviewView
+              onToast={showToast}
+              onExit={() => { refreshMeta(); setView({ name: 'cards', bookId: null }); }}
+              hasKey={hasKey}
+              hasBooks={hasBooks}
+            />
           )}
-          {view.name === 'settings' && <SettingsView onToast={showToast} onSync={doSync} syncing={!!syncing} />}
+          {view.name === 'settings' && (
+            <SettingsView
+              onToast={showToast}
+              hasKey={hasKey}
+              onKeyChange={refreshMeta}
+            />
+          )}
         </main>
       </div>
 
@@ -387,7 +539,9 @@ export default function App() {
       )}
       {tagToDelete && (
         <ConfirmModal
+          title="删除标签"
           message={`删除标签「${tagToDelete.name}」？将把它从所有卡片上移除。`}
+          confirmLabel="删除标签"
           onConfirm={() => {
             const t = tagToDelete;
             setTagToDelete(null);
@@ -401,7 +555,66 @@ export default function App() {
   );
 }
 
-// ---------- 卡片 ----------
+function EmptyWall({
+  ready, needsSetup, hasKey, hasBooks, searching, filtered, query, syncing,
+  onSetup, onSync, onClear,
+}: {
+  ready: boolean;
+  needsSetup: boolean;
+  hasKey: boolean;
+  hasBooks: boolean;
+  searching: boolean;
+  filtered: boolean;
+  query: string;
+  syncing: string | null;
+  onSetup: () => void;
+  onSync: () => void;
+  onClear: () => void;
+}) {
+  if (!ready) return <p className="hint empty-state">载入卡片…</p>;
+  if (needsSetup || (!hasKey && !hasBooks)) {
+    return (
+      <div className="empty-setup">
+        <p className="empty-title">把微信读书的划线接到这面墙上</p>
+        <p className="empty-body">到设置粘贴 API Key，再同步。划线和想法会变成可检索、可翻牌的卡片。</p>
+        <button className="primary" onClick={onSetup}>填写 API Key</button>
+      </div>
+    );
+  }
+  if (hasKey && !hasBooks) {
+    return (
+      <div className="empty-setup">
+        <p className="empty-title">Key 已经在钥匙串里，墙上还是空的</p>
+        <p className="empty-body">同步一次，微信读书里的划线会出现在这里。</p>
+        <button className="primary" onClick={onSync} disabled={!!syncing}>{syncing ?? '同步'}</button>
+      </div>
+    );
+  }
+  if (searching) {
+    return (
+      <div className="empty-setup">
+        <p className="empty-title">没有找到「{query}」</p>
+        <p className="empty-body">检索范围是全部卡片。换个词，或按 Esc 退出检索。</p>
+      </div>
+    );
+  }
+  if (filtered) {
+    return (
+      <div className="empty-setup">
+        <p className="empty-title">没有匹配的卡片</p>
+        <p className="empty-body">当前书、标签或星标筛过了墙。清掉筛选，或换一本书。</p>
+        <button onClick={onClear}>清除筛选</button>
+      </div>
+    );
+  }
+  return (
+    <div className="empty-setup">
+      <p className="empty-title">墙上还没有卡片</p>
+      <p className="empty-body">同步微信读书，或自己写一张。</p>
+      <button className="primary" onClick={onSync} disabled={!hasKey || !!syncing}>{syncing ?? '同步'}</button>
+    </div>
+  );
+}
 
 function Card({ card, onEdit, onChanged, onToast }: {
   card: CardRow;
@@ -413,7 +626,6 @@ function Card({ card, onEdit, onChanged, onToast }: {
   const [overflowed, setOverflowed] = useState(false);
   const textRef = useRef<HTMLParagraphElement>(null);
 
-  // 未展开时测量钳制截断：有溢出才给展开承诺（指针 + 键盘语义）
   useEffect(() => {
     if (expanded) return;
     const el = textRef.current;
@@ -424,21 +636,26 @@ function Card({ card, onEdit, onChanged, onToast }: {
   const [confirming, setConfirming] = useState(false);
 
   const toggleStar = async () => {
-    await call('toggle_starred', { id: card.id, starred: !card.starred }).catch((e) => onToast(String(e)));
+    await call('toggle_starred', { id: card.id, starred: !card.starred }).catch((e) => onToast(explainError(e)));
     onChanged();
   };
-  // WKWebView 未实现 window.confirm（wry 无 delegate，恒返回 false），改用应用内确认弹层
   const remove = () => setConfirming(true);
   const confirmRemove = async () => {
     setConfirming(false);
-    await call('delete_card', { id: card.id }).catch((e) => onToast(String(e)));
+    await call('delete_card', { id: card.id }).catch((e) => onToast(explainError(e)));
     onChanged();
   };
   return (
     <>
-    <article className={`card kind-${card.kind}${expanded ? ' expanded' : ''}`}>
+    <article className={`card kind-${card.kind}${card.starred ? ' starred' : ''}${expanded ? ' expanded' : ''}`}>
+      <button
+        className={`card-star${card.starred ? ' starred' : ''}`}
+        title="星标"
+        aria-label="星标"
+        aria-pressed={card.starred}
+        onClick={toggleStar}
+      ><Icon name="star" size={13} /></button>
       <div className="card-actions">
-        <button className={card.starred ? 'starred' : ''} title="星标" aria-label="星标" aria-pressed={card.starred} onClick={toggleStar}><Icon name="star" size={13} /></button>
         <button title="编辑" aria-label="编辑" onClick={onEdit}><Icon name="pen" size={13} /></button>
         <button title="删除" aria-label="删除" onClick={remove}><Icon name="trash" size={13} /></button>
       </div>
@@ -473,7 +690,9 @@ function Card({ card, onEdit, onChanged, onToast }: {
     </article>
     {confirming && (
       <ConfirmModal
+        title="删除卡片"
         message="删除这张卡片？此操作不可撤销。"
+        confirmLabel="删除卡片"
         onConfirm={confirmRemove}
         onCancel={() => setConfirming(false)}
       />
@@ -482,8 +701,6 @@ function Card({ card, onEdit, onChanged, onToast }: {
   );
 }
 
-// 弹层对话框共用行为：打开聚焦首控件、Tab 循环、Esc 关闭、关闭归还焦点。
-// onClose 走 ref，避免父组件重渲染时 effect 重跑把焦点拽回首个控件。
 function useDialog(onClose: () => void) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -515,8 +732,10 @@ function useDialog(onClose: () => void) {
   return ref;
 }
 
-function ConfirmModal({ message, onConfirm, onCancel }: {
+function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel }: {
+  title: string;
   message: string;
+  confirmLabel: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -524,23 +743,21 @@ function ConfirmModal({ message, onConfirm, onCancel }: {
   return (
     <div className="modal-mask" onClick={onCancel}>
       <div className="modal modal-confirm" ref={ref} role="dialog" aria-modal="true" aria-labelledby="modal-confirm-title" onClick={(e) => e.stopPropagation()}>
-        <h3 id="modal-confirm-title">确认</h3>
+        <h3 id="modal-confirm-title">{title}</h3>
         <p>{message}</p>
         <div className="modal-actions">
           <button className="ghost" onClick={onCancel}>取消</button>
-          <button className="primary danger" onClick={onConfirm}>删除</button>
+          <button className="primary danger" onClick={onConfirm}>{confirmLabel}</button>
         </div>
       </div>
     </div>
   );
 }
 
-// ---------- 编辑弹层 ----------
-
 function EditModal({ card, onClose, onSaved, onToast }: {
   card: CardRow;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (patch: { note: string; text: string }) => void;
   onToast: (m: string) => void;
 }) {
   const ref = useDialog(onClose);
@@ -549,38 +766,42 @@ function EditModal({ card, onClose, onSaved, onToast }: {
   const [tagName, setTagName] = useState('');
   const isSelf = card.kind === 'self';
   const save = async () => {
+    if (isSelf && !text.trim()) {
+      onToast('卡片正文不能为空。');
+      return;
+    }
     try {
       await call('update_card', {
         id: card.id,
         note,
         text: isSelf ? text : undefined,
       });
-      onSaved();
+      onSaved({ note, text });
     } catch (e) {
-      onToast(String(e));
+      onToast(explainError(e));
     }
   };
   const addTag = async () => {
     if (!tagName.trim()) return;
-    await call('add_tag', { cardId: card.id, name: tagName.trim() }).catch((e) => onToast(String(e)));
+    await call('add_tag', { cardId: card.id, name: tagName.trim() }).catch((e) => onToast(explainError(e)));
     setTagName('');
-    onSaved();
+    onSaved({ note, text });
   };
   const removeTag = async (t: string) => {
-    await call('remove_tag', { cardId: card.id, name: t }).catch((e) => onToast(String(e)));
-    onSaved();
+    await call('remove_tag', { cardId: card.id, name: t }).catch((e) => onToast(explainError(e)));
+    onSaved({ note, text });
   };
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" ref={ref} role="dialog" aria-modal="true" aria-labelledby="modal-edit-title" onClick={(e) => e.stopPropagation()}>
         <h3 id="modal-edit-title">{isSelf ? '编辑自建卡' : '补写想法'}</h3>
         {isSelf ? (
-          <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder="正文" />
+          <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder="正文" aria-label="正文" />
         ) : (
           <blockquote className="quote-box">{card.text}</blockquote>
         )}
         {!isSelf && (
-          <textarea rows={5} value={note} onChange={(e) => setNote(e.target.value)} placeholder="写下你的想法…" autoFocus />
+          <textarea rows={5} value={note} onChange={(e) => setNote(e.target.value)} placeholder="写下你的想法…" aria-label="想法" autoFocus />
         )}
         <div className="tag-editor">
           {card.tags.map((t) => (
@@ -591,19 +812,18 @@ function EditModal({ card, onClose, onSaved, onToast }: {
             onChange={(e) => setTagName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addTag()}
             placeholder="新标签，回车添加"
+            aria-label="新标签"
           />
           <button onClick={addTag}>加标签</button>
         </div>
         <div className="modal-actions">
           <button className="ghost" onClick={onClose}>取消</button>
-          <button className="primary" onClick={save}>保存</button>
+          <button className="primary" onClick={save} disabled={isSelf && !text.trim()}>保存</button>
         </div>
       </div>
     </div>
   );
 }
-
-// ---------- 新建自建卡 ----------
 
 function CreateModal({ onClose, onSaved, onToast }: {
   onClose: () => void;
@@ -612,53 +832,68 @@ function CreateModal({ onClose, onSaved, onToast }: {
 }) {
   const [text, setText] = useState('');
   const [tagsInput, setTagsInput] = useState('');
+  const [emptyHint, setEmptyHint] = useState(false);
   const ref = useDialog(onClose);
   const save = async () => {
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      setEmptyHint(true);
+      return;
+    }
     try {
       const tagNames = tagsInput.split(/[,，\s]+/).filter(Boolean);
       await call('create_card', { text: text.trim(), tagNames });
       onSaved();
-      onClose();
     } catch (e) {
-      onToast(String(e));
+      onToast(explainError(e));
     }
   };
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" ref={ref} role="dialog" aria-modal="true" aria-labelledby="modal-create-title" onClick={(e) => e.stopPropagation()}>
         <h3 id="modal-create-title">新建卡片</h3>
-        <textarea rows={7} value={text} onChange={(e) => setText(e.target.value)} placeholder="记录一个想法…" autoFocus />
-        <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} placeholder="标签（逗号分隔，可空）" />
+        <textarea
+          rows={7}
+          value={text}
+          onChange={(e) => { setText(e.target.value); if (e.target.value.trim()) setEmptyHint(false); }}
+          placeholder="记录一个想法…"
+          aria-label="卡片正文"
+          aria-invalid={emptyHint || undefined}
+          autoFocus
+        />
+        {emptyHint && <p className="err field-hint">先写一句再保存。</p>}
+        <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} placeholder="标签（逗号分隔，可空）" aria-label="标签" />
         <div className="modal-actions">
           <button className="ghost" onClick={onClose}>取消</button>
-          <button onClick={save}>保存</button>
+          <button className="primary" onClick={save} disabled={!text.trim()}>保存</button>
         </div>
       </div>
     </div>
   );
 }
 
-// ---------- 复习 · 翻牌 ----------
-
-// 翻牌是一副编目卡牌：背面朝上，mono 编目号做悬念；翻面读原文，再点飞出换下一张。
-// 评级按钮移除：翻过即静默记 Good，间隔重复调度照常延续。
-
-function ReviewView({ onToast, onExit }: { onToast: (m: string) => void; onExit: () => void }) {
+function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
+  onToast: (m: string) => void;
+  onExit: () => void;
+  hasKey: boolean;
+  hasBooks: boolean;
+}) {
   const [queue, setQueue] = useState<CardRow[]>([]);
   const [idx, setIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [flying, setFlying] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<CardRow | null>(null);
   const loadingRef = useRef(false);
   const flyingRef = useRef(false);
+  const flippedRef = useRef(false);
+  flippedRef.current = flipped;
 
   useEffect(() => {
     if (loadingRef.current) return;
     loadingRef.current = true;
     call<CardRow[]>('get_due_cards', { limit: 30 })
       .then((c) => setQueue(c))
-      .catch((e) => onToast(String(e)))
+      .catch((e) => onToast(explainError(e)))
       .finally(() => setLoading(false));
   }, [onToast]);
 
@@ -666,7 +901,7 @@ function ReviewView({ onToast, onExit }: { onToast: (m: string) => void; onExit:
     if (flyingRef.current) return;
     flyingRef.current = true;
     const card = queue[idx];
-    if (card) call('grade_review', { cardId: card.id, rating: 'good' }).catch((e) => onToast(String(e)));
+    if (card) call('grade_review', { cardId: card.id, rating: 'good' }).catch((e) => onToast(explainError(e)));
     setFlying(true);
     window.setTimeout(() => {
       flyingRef.current = false;
@@ -676,8 +911,13 @@ function ReviewView({ onToast, onExit }: { onToast: (m: string) => void; onExit:
     }, 240);
   };
 
+  const unflip = () => {
+    if (flyingRef.current || !flippedRef.current) return;
+    setFlipped(false);
+  };
+
   const flipOrAdvance = () => {
-    if (flyingRef.current) return;
+    if (flyingRef.current || editing) return;
     if (flipped) advance();
     else setFlipped(true);
   };
@@ -685,9 +925,13 @@ function ReviewView({ onToast, onExit }: { onToast: (m: string) => void; onExit:
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      // 焦点在按钮/输入框上时交给原生激活，避免一次按键同时翻卡+点按钮
       if (t && (t.tagName === 'BUTTON' || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-      if (e.key === 'Escape') onExit();
+      if (e.key === 'Escape') { onExit(); return; }
+      if (e.key === 'z' || e.key === 'Z' || e.key === 'Backspace') {
+        e.preventDefault();
+        unflip();
+        return;
+      }
       if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
         flipOrAdvance();
@@ -696,33 +940,51 @@ function ReviewView({ onToast, onExit }: { onToast: (m: string) => void; onExit:
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [flipped, idx, queue, onExit]);
+  }, [flipped, idx, queue, onExit, editing]);
 
   if (loading) return <div className="review"><p className="hint">加载队列…</p></div>;
-  if (idx >= queue.length)
+  if (idx >= queue.length) {
+    const done = queue.length > 0;
+    const hint = done
+      ? `共翻阅 ${queue.length} 张 · 间隔重复讲究少而勤。`
+      : !hasKey
+        ? '先到设置填写 API Key，再同步。到期的卡片会排进这副牌。'
+        : !hasBooks
+          ? '同步之后，新卡片会自动进入队列。'
+          : '新卡片会自动进入队列。间隔重复讲究少而勤。';
     return (
       <div className="review">
-        <div className="review-top"><span>Flip / 翻牌</span></div>
+        <div className="review-top"><span>翻牌</span></div>
         <div className="deck-done">
-          <p className="review-text">{queue.length ? '这副翻完了。' : '当前没有到期卡片'}</p>
-          <p className="review-hint">{queue.length ? `共翻阅 ${queue.length} 张 · 间隔重复讲究少而勤。` : '新卡片会自动进入队列。'}</p>
+          <p className="review-text">{done ? '这副翻完了。' : '当前没有到期卡片'}</p>
+          <p className="review-hint">{hint}</p>
           <button className="primary" onClick={onExit}>返回卡片墙</button>
         </div>
       </div>
     );
+  }
 
   const card = queue[idx];
   const under = [queue[idx + 1], queue[idx + 2]];
   return (
     <div className="review">
       <div className="review-top">
-        <span>Review / 剩余 {queue.length - idx} 张</span>
-        <button className="ghost" onClick={onExit}>退出 (Esc)</button>
+        <span>剩余 {queue.length - idx} 张</span>
+        <button className="ghost" onClick={onExit}>退出（Esc）</button>
       </div>
       <div className="review-ticks" aria-hidden="true">
         {queue.map((_, i) => <i key={i} className={i < idx ? 'done' : i === idx ? 'now' : ''} />)}
       </div>
-      <div className="deck-stage" onClick={flipOrAdvance}>
+      <div
+        className="deck-stage"
+        role="button"
+        tabIndex={0}
+        aria-label={flipped ? '翻过这张' : '翻面阅读'}
+        onClick={flipOrAdvance}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flipOrAdvance(); }
+        }}
+      >
         {under.map((c, k) => c && (
           <div key={c.id} className={`deck-under u${k + 1}`} aria-hidden="true">
             <span className="deck-back-frame" />
@@ -733,10 +995,10 @@ function ReviewView({ onToast, onExit }: { onToast: (m: string) => void; onExit:
             <div className="deck-face back">
               <span className="deck-back-frame" />
               <div className="deck-back-inner">
-                <span className="deck-back-label">Flip / 翻牌</span>
+                <span className="deck-back-label">翻牌</span>
                 <span className="deck-back-num mono">{String(idx + 1).padStart(2, '0')}<span> / {queue.length}</span></span>
               </div>
-              <span className="deck-back-hint"><Icon name="refresh" size={12} />轻触翻面</span>
+              <span className="deck-back-hint"><Icon name="refresh" size={12} />点击或空格翻面</span>
             </div>
             <div className="deck-face front">
               <span className="card-source">{[card.bookTitle, card.chapterTitle].filter(Boolean).join(' / ') || '自建卡'}</span>
@@ -745,18 +1007,41 @@ function ReviewView({ onToast, onExit }: { onToast: (m: string) => void; onExit:
                 {card.abstractText && <blockquote>{card.abstractText}</blockquote>}
                 {card.note && <p className="card-note">{card.note}</p>}
               </div>
-              <span className="deck-next-hint">空格 / 点击 · 翻过这张</span>
+              <span className="deck-next-hint">点击或空格翻过这张 · Z 退回背面</span>
             </div>
           </div>
         </div>
       </div>
+      {flipped && (
+        <div className="review-tools">
+          <button
+            className="ghost"
+            onClick={(e) => { e.stopPropagation(); setEditing(card); }}
+          >
+            记下想法
+          </button>
+        </div>
+      )}
+      {editing && (
+        <EditModal
+          card={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(patch) => {
+            setQueue((qs) => qs.map((c) => (c.id === editing.id ? { ...c, note: patch.note, text: patch.text } : c)));
+            setEditing(null);
+          }}
+          onToast={onToast}
+        />
+      )}
     </div>
   );
 }
 
-// ---------- 设置 ----------
-
-function SettingsView({ onToast, onSync, syncing }: { onToast: (m: string) => void; onSync: () => void; syncing: boolean }) {
+function SettingsView({ onToast, hasKey, onKeyChange }: {
+  onToast: (m: string) => void;
+  hasKey: boolean;
+  onKeyChange: () => Promise<void> | void;
+}) {
   const [key, setKey] = useState('');
   const [status, setStatus] = useState<SettingsInfo | null>(null);
   const [testing, setTesting] = useState(false);
@@ -773,7 +1058,7 @@ function SettingsView({ onToast, onSync, syncing }: { onToast: (m: string) => vo
       const n = await call<number>('test_connection', { key: key.trim() });
       setTestResult(`连接成功：共 ${n} 本有笔记的书`);
     } catch (e) {
-      setTestResult(`失败：${String(e)}`);
+      setTestResult(`失败：${explainError(e)}`);
     } finally {
       setTesting(false);
     }
@@ -782,18 +1067,21 @@ function SettingsView({ onToast, onSync, syncing }: { onToast: (m: string) => vo
   const saveKey = async () => {
     try {
       await call('save_api_key', { key: key.trim() });
-      onToast('API Key 已存入钥匙串');
+      await onKeyChange();
+      onToast('API Key 已存入钥匙串。点顶栏「同步」接进划线。');
     } catch (e) {
-      onToast(String(e));
+      onToast(explainError(e));
     }
   };
 
   const clearKey = async () => {
     try {
       await call('clear_api_key');
+      setKey('');
+      await onKeyChange();
       onToast('已清除 API Key');
     } catch (e) {
-      onToast(String(e));
+      onToast(explainError(e));
     }
   };
 
@@ -803,7 +1091,8 @@ function SettingsView({ onToast, onSync, syncing }: { onToast: (m: string) => vo
       <section>
         <h3>微信读书 API Key</h3>
         <p className="hint">
-          到 <a href="https://weread.qq.com/r/weread-skills" target="_blank" rel="noreferrer">weread.qq.com/r/weread-skills</a> 开通官方 Skills，
+          {hasKey ? '钥匙串里已有 Key。再贴一张会覆盖。' : '还没有保存 Key。'}
+          {' '}到 <a href="https://weread.qq.com/r/weread-skills" target="_blank" rel="noreferrer">weread.qq.com/r/weread-skills</a> 开通官方 Skills，
           签发以 <code>wrk-</code> 或 <code>WRK-</code> 开头的 Key 后粘贴到这里。
         </p>
         <input
@@ -815,18 +1104,18 @@ function SettingsView({ onToast, onSync, syncing }: { onToast: (m: string) => vo
         />
         <div className="row">
           <button onClick={testConn} disabled={testing || !key.trim()}>{testing ? '测试中…' : '测试连接'}</button>
-          <button onClick={saveKey} disabled={!key.trim()}>保存到钥匙串</button>
-          <button className="ghost" onClick={clearKey}>清除</button>
+          <button className="primary" onClick={saveKey} disabled={!key.trim()}>保存到钥匙串</button>
+          <button className="ghost" onClick={clearKey} disabled={!hasKey && !key.trim()}>清除</button>
         </div>
         {testResult && <p className={testResult.startsWith('失败') ? 'err' : 'ok'}>{testResult}</p>}
       </section>
       <section>
-        <h3>手动同步</h3>
+        <h3>同步</h3>
         <p className="hint">
           上次全量同步：
           {status?.lastFullSync ? new Date(status.lastFullSync * 1000).toLocaleString() : '从未'}
         </p>
-        <button className="primary" onClick={onSync} disabled={syncing}>{syncing ? '同步中…' : '立即同步'}</button>
+        <p className="hint">同步入口在顶栏。没有 Key 时按钮是关上的。</p>
       </section>
       <section>
         <h3>关于</h3>

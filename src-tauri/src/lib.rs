@@ -142,6 +142,12 @@ fn query_cards(state: State<'_, Db>, filter: CardFilter, limit: Option<i64>, off
 }
 
 #[tauri::command]
+fn count_cards(state: State<'_, Db>, filter: CardFilter) -> Result<i64, String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    db::count_cards(&conn, &filter).map_err(db_err)
+}
+
+#[tauri::command]
 fn search_cards(state: State<'_, Db>, q: String, filter: CardFilter) -> Result<Vec<CardRow>, String> {
     let conn = state.lock().map_err(|e| e.to_string())?;
     db::search_cards(&conn, &q, &filter, 200).map_err(db_err)
@@ -278,6 +284,7 @@ pub fn run() {
             list_books,
             set_book_sync_reviews,
             query_cards,
+            count_cards,
             search_cards,
             create_card,
             update_card,

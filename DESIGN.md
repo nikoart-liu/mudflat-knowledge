@@ -95,7 +95,7 @@ spacing:
   micro: "4px"
   tight: "8px"
   inner: "12px"
-  card-pad: "20px 24px"
+  card-pad: "20px 40px 20px 24px"
   section: "24px"
   loose: "48px"
 components:
@@ -128,7 +128,7 @@ components:
     textColor: "{colors.ink}"
     rounded: "{rounded.hairline-radius}"
   card-wall:
-    backgroundColor: "{colors.paper}"
+    backgroundColor: "{colors.panel}"
     textColor: "{colors.ink}"
   card-starred:
     backgroundColor: "{colors.ember-wash}"
@@ -141,7 +141,7 @@ components:
 
 **Creative North Star: "藏书人的索引柜（The Annotated Card Catalog）"**
 
-整个界面是一座藏书人亲手维护的索引柜：柜架是严格对齐的瑞士网格，抽屉之间只有发丝线；每一张卡都是一张写满批注的索引卡，mono 字体的书号与日期像图书馆编目一样冷静地钉在角落。金色只出现在藏书人真正「下笔承诺」的地方：一颗星标、一个选中态、一次确认。除此之外，纸就是纸，墨就是墨。
+整个界面是一座藏书人亲手维护的索引柜：柜架是严格对齐的瑞士网格；每本书是一只纸板抽屉，抽屉与抽屉之间留出一截暖纸；每一张卡是四边发丝线勾出的索引卡，卡与卡之间是纸板走道，不是投影也不是空气。mono 字体的书号与日期像图书馆编目一样冷静地钉在角落。金色只出现在藏书人真正「下笔承诺」的地方：一颗星标、一个选中态、一次确认。除此之外，纸就是纸，墨就是墨。
 
 系统性格是融合产物：**网格即秩序，纸墨即温度**。结构上寸土必争地对齐（发丝分割线、锐角 2px 半径、无阴影、mono 元数据），底色上保留旧书的呼吸（暖纸中性色整体染向品牌金的颜色相，OKLCH 中 hue≈80–85）。界面密度优先：单屏尽量多卡，但密度靠排版达成，从不靠压缩文字或缩小行距。
 
@@ -170,7 +170,7 @@ components:
 
 ### Neutral
 - **暖纸 Warm Paper** (#f8f5f1): 主表面。整体染向品牌相，接近白但没有一处纯白。
-- **纸板 Board** (#efece7): 侧栏、次级面板、输入框静止底色。
+- **纸板 Board** (#efece7): 侧栏、次级面板、输入框静止底色、卡片墙抽屉槽（卡与卡之间的走道）。
 - **石蜡 Paraffin** (#ebe7e0): 选中、hover、code 底色。
 - **发丝线 Hairline** (#c7c4bc): 一级分割线、输入框边框。
 - **深发丝线 Hairline Strong** (#a9a49c): 弹层边框、复习卡边框等需要更重定义的地方。
@@ -230,12 +230,14 @@ components:
 - **State:** 选中态反转为焦墨底暖纸字；未选中的可删除项 hover 时文字转墨。
 
 ### Cards / Containers
-- **Corner Style:** 直角到 2px 卡片壁，卡片本身无边框，仅以右侧与底部发丝线参与墙体网格。
-- **Background:** 划线卡为暖纸；用户自建想法卡为琥珀晕染 #f8f0db，是卡片身份差异的第一信号。
-- **Shadow Strategy:** 见 Elevation，无条件禁止。
-- **Border:** 仅参加墙体共享的发丝线（右 + 下），不是每卡自带完整描边。
-- **Internal Padding:** 20px 24px，是全系统最大的留白单位。
+- **Corner Style:** 直角到 2px 卡片壁。
+- **Background:** 划线卡为暖纸；用户自建想法卡为琥珀晕染 #f8f0db，是卡片身份差异的第一信号。墙体抽屉槽为纸板 #efece7，走道露出纸板。
+- **Shadow Strategy:** 见 Elevation，无条件禁止。间隔靠纸板走道与暖纸休息，不用投影把卡「浮起来」。
+- **Border:** 每张卡四边 1px 发丝线，成为闭合的索引卡模块；不再靠共享右/下边拼成一张墙。
+- **Wall rhythm:** 卡与卡 8px（tight）；抽屉内缘 12px（inner）；抽屉与抽屉 24px（section）。
+- **Internal Padding:** 20px 40px 20px 24px。右侧多出一列给常驻星标，正文不与印记抢行。
 - **Meta Floor Alignment:** 卡片为纵向弹性布局，编目带（标签 / 出处 / 日期）以 margin-top:auto 钉在卡底：同一排卡片无论正文长短，编目带底线全部对齐，像抽屉里并列的目录卡。带内节奏：上缘 16px、标签簇与出处间 7px、出处与日期间 4px。
+- **Star mark:** 星标常驻为右上角 SVG 印记（未星灰墨描边，已星琥珀实心）；编辑与删除悬停或键盘聚焦时才展开，不另用 Unicode 星号。
 
 ### Inputs / Fields
 - **Style:** 纸板底 #efece7 + 发丝线边框 + 2px 圆角，无内阴影。

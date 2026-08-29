@@ -83,6 +83,7 @@ fn demo_flow_query_search_persist_review() {
     // ---- 卡片墙：24 不要求（此处 9 条），但过滤正确 ----
     let all = db::query_cards(&conn, &CardFilter::default(), 500, 0).unwrap();
     assert_eq!(all.len(), 9);
+    assert_eq!(db::count_cards(&conn, &CardFilter::default()).unwrap(), 9);
     assert!(all.iter().all(|c| !c.deleted));
 
     let by_book = db::query_cards(
@@ -93,6 +94,14 @@ fn demo_flow_query_search_persist_review() {
     )
     .unwrap();
     assert_eq!(by_book.len(), 8);
+    assert_eq!(
+        db::count_cards(
+            &conn,
+            &CardFilter { book_id: db::find_book_row(&conn, "b-1").unwrap(), ..CardFilter::default() },
+        )
+        .unwrap(),
+        8
+    );
 
     // 回归锁定：book_id 必须作为绑定参数而非字面量嵌入 SQL。
     // b-2 的行 id 为 2 —— 若实现退化为 c.book_id=1，这里会错误返回 b-1 的卡片。

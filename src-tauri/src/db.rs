@@ -369,26 +369,30 @@ fn collect_cards(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) 
         .collect())
 }
 
-pub fn query_cards(conn: &Connection, filter: &CardFilter, limit: i64, offset: i64) -> DbResult<Vec<CardRow>> {
-    let mut conds: Vec<String> = vec!["c.deleted=0".into()];
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+fn apply_card_filter(filter: &CardFilter, conds: &mut Vec<String>, params: &mut Vec<Box<dyn rusqlite::ToSql>>) {
     if let Some(bid) = filter.book_id {
-        conds.push(format!("c.book_id=?{}", push_param(&mut params, bid)));
+        conds.push(format!("c.book_id=?{}", push_param(params, bid)));
     }
     if filter.starred_only {
         conds.push("c.starred=1".into());
     }
     if !filter.kinds.is_empty() {
-        let placeholders = filter.kinds.iter().map(|k| { let _ = push_param(&mut params, k.clone()); format!("?{}", params.len()) }).collect::<Vec<_>>().join(",");
+        let placeholders = filter.kinds.iter().map(|k| { let _ = push_param(params, k.clone()); format!("?{}", params.len()) }).collect::<Vec<_>>().join(",");
         conds.push(format!("c.kind IN ({placeholders})"));
     }
     if !filter.tag_ids.is_empty() {
         // OR 语义：卡片有任一选中标签即命中
-        let placeholders = filter.tag_ids.iter().map(|t| { let _ = push_param(&mut params, *t); format!("?{}", params.len()) }).collect::<Vec<_>>().join(",");
+        let placeholders = filter.tag_ids.iter().map(|t| { let _ = push_param(params, *t); format!("?{}", params.len()) }).collect::<Vec<_>>().join(",");
         conds.push(format!(
             "c.id IN (SELECT card_id FROM card_tags WHERE tag_id IN ({placeholders}))"
         ));
     }
+}
+
+pub fn query_cards(conn: &Connection, filter: &CardFilter, limit: i64, offset: i64) -> DbResult<Vec<CardRow>> {
+    let mut conds: Vec<String> = vec!["c.deleted=0".into()];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+    apply_card_filter(filter, &mut conds, &mut params);
     // 占位符从 ?1 起连续编号：LIMIT/OFFSET 取当前长度+1
     let limit_ph = params.len() + 1;
     params.push(Box::new(limit));
@@ -402,6 +406,16 @@ pub fn query_cards(conn: &Connection, filter: &CardFilter, limit: i64, offset: i
     );
     let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     collect_cards(conn, &sql, &refs)
+}
+
+pub fn count_cards(conn: &Connection, filter: &CardFilter) -> DbResult<i64> {
+    let mut conds: Vec<String> = vec!["c.deleted=0".into()];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+    apply_card_filter(filter, &mut conds, &mut params);
+    let sql = format!("SELECT COUNT(*) FROM cards c WHERE {}", conds.join(" AND "));
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    stmt.query_row(refs.as_slice(), |r| r.get(0))
 }
 
 fn push_param(params: &mut Vec<Box<dyn rusqlite::ToSql>>, v: impl rusqlite::ToSql + 'static) -> usize {
