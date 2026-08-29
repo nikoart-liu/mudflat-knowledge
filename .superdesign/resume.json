@@ -1,39 +1,53 @@
 {
-  "project": {
-    "id": "16e75b5c-8162-411d-a054-4cfc1ab35a7e",
-    "title": "Mudflat Knowledge UI Redesign",
-    "canvas": "https://superdesign.dev/teams/0d40cad8-8a7f-482b-9510-8ee3181326cd/projects/16e75b5c-8162-411d-a054-4cfc1ab35a7e"
-  },
-  "targets": [
-    {
-      "name": "card-wall",
-      "kind": "existing-ui",
-      "description": "App.tsx 单文件应用的卡片墙主视图（含顶栏/侧栏壳）",
-      "baselineDraftId": "d55c4751-9750-4770-a755-edb47a4b008c",
-      "activeDraftId": "42ff75d6-701a-407e-a560-abc87820a5ea",
-      "branches": [
-        {
-          "draftId": "6734b9dd-9ed8-43ab-ad04-175320508633",
-          "label": "纸质文人书房版",
-          "preview": "https://p.superdesign.dev/draft/6734b9dd-9ed8-43ab-ad04-175320508633"
-        },
-        {
-          "draftId": "42ff75d6-701a-407e-a560-abc87820a5ea",
-          "label": "瑞士网格专业版",
-          "preview": "https://p.superdesign.dev/draft/42ff75d6-701a-407e-a560-abc87820a5ea",
-          "versions": [
-            "v1 初版",
-            "v2 增加封面图"
-          ]
-        }
-      ],
-      "contextBundle": [
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-29T08:04:07+00:00",
+  "targets": {
+    "card-wall": {
+      "targetKind": "existing-ui",
+      "projectId": "3c3a70c2-3ecf-4926-bf71-68c207fc1f31",
+      "baselineDraftId": "02650af0-324b-46b6-9652-cb3087b12b59",
+      "activeDraftId": "c767015d-8a62-4c26-889e-af3418d5c7dc",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
         ".superdesign/design-system.md",
-        "src/App.tsx",
-        "src/App.css"
+        "src/App.tsx:44:76",
+        "src/App.tsx:304:1127",
+        "src/App.css",
+        "public/logo-mark.svg"
       ],
-      "initComplete": true,
-      "activeLabel": "瑞士网格专业版 v2（含图书封面）"
+      "fingerprints": {
+        ".superdesign/design-system.md": "fa29759d1d53f9c56987040a27cdc15f62e75d10daaee66ea0384615812999b9",
+        "src/App.tsx": "1e610c733c75354fa1ba73b8545eb7c3e4b5dac10cee3389f975e9659b8621b3",
+        "src/App.css": "27bd63d8f0ffa2b42e4f0fa0821a0a021e25a0d30c39beca63a1c6fa34b2adeb",
+        "public/logo-mark.svg": "15fcf51ba0bdf54486953a4ef9e904bb7a50a6b9c4aee1a452e93f5015319c70"
+      },
+      "drafts": {
+        "02650af0-324b-46b6-9652-cb3087b12b59": {
+          "title": "Current UI — 藏书人的索引柜（v1 基准）",
+          "visualDirection": "v1 瑞士网格×暖纸×烬火琥珀（reproduction 基准，非 v2 候选）",
+          "currentVersion": 1
+        },
+        "f627f1d8-b379-4a81-8c54-ccb4224c0539": {
+          "title": "泥滩知识 v2 方向A「暗室油墨」",
+          "visualDirection": "深色夜间书房，明度阶差分层，标记笔高亮划线",
+          "parentDraftId": "02650af0-324b-46b6-9652-cb3087b12b59",
+          "currentVersion": 3
+        },
+        "c767015d-8a62-4c26-889e-af3418d5c7dc": {
+          "title": "泥滩知识 v2 方向B「刊物排印」",
+          "visualDirection": "中文文学刊物内页，宋体刊头/栏线网格/页码感",
+          "parentDraftId": "02650af0-324b-46b6-9652-cb3087b12b59",
+          "currentVersion": 2
+        },
+        "d1e3a5e0-33e1-4e00-8e63-017a6bf42de0": {
+          "title": "泥滩知识 v2 方向C「静音画廊」",
+          "visualDirection": "近无彩极简，字号/字重/间距做层级，强调色仅星标与主动作",
+          "parentDraftId": "02650af0-324b-46b6-9652-cb3087b12b59",
+          "currentVersion": 2
+        }
+      },
+      "notes": "方向B「刊物排印」已选定并实现到 src/App.css（整体重写）+ src/App.tsx（眉标/目录序号/清样标题等最小改动）+ DESIGN.md（v2 规范重写）+ PRODUCT.md（品牌段）。activeDraftId=B。v1 指纹已失效并更新。",
+      "updatedAt": "2026-08-29T08:04:07+00:00"
     }
-  ]
+  }
 }

@@ -67,7 +67,7 @@ function Cover({ src, title, large }: { src: string; title: string; large?: bool
   const cls = large ? 'cover-lg' : 'cover-box';
   const showImg = src && !failed;
   return (
-    <div className={cls} style={{ background: large && !showImg ? 'var(--ember-wash)' : undefined }} aria-hidden={large ? undefined : true}>
+    <div className={cls} style={{ background: large && !showImg ? 'var(--panel)' : undefined }} aria-hidden={large ? undefined : true}>
       {showImg
         ? <img src={src} alt={large ? title : ''} loading="lazy" onError={() => setFailed(true)} />
         : <span className="cover-fallback">{title.slice(0, large ? 8 : 4)}</span>}
@@ -351,7 +351,7 @@ export default function App() {
               aria-current={view.name === 'review' ? 'true' : undefined}
             >
               <Icon name="refresh" size={13} />
-              <span className="grow">翻牌</span>
+              <span className="grow">翻牌回顾</span>
               {dueCount > 0 && <span className="count">{dueCount}</span>}
             </button>
           </section>
@@ -364,7 +364,7 @@ export default function App() {
                 onClick={() => goCards(null)}
               >
                 <Icon name="layers" size={13} />
-                <span className="grow">全部卡片</span>
+                <span className="grow">全部索引</span>
                 <span className="count">{books.reduce((n, b) => n + b.noteCount + b.reviewCount, 0)}</span>
               </button>
               <button
@@ -374,9 +374,10 @@ export default function App() {
                 title="只看星标卡片"
               >
                 <Icon name="star" size={13} />
-                <span className="grow">只看星标</span>
+                <span className="grow">星标项目</span>
               </button>
-              {books.map((b) => (
+              <div className="sub-eyebrow">刊物</div>
+              {books.map((b, i) => (
                 <button
                   key={b.id}
                   className={`side-item ${!searching && view.name === 'cards' && view.bookId === b.id ? 'active' : ''}`}
@@ -384,8 +385,8 @@ export default function App() {
                   onClick={() => goCards(b.id)}
                   title={b.title}
                 >
-                  <Cover src={b.cover} title={b.title} />
-                  <span className="grow">{b.title}</span>
+                  <span className="book-no" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+                  <span className="grow book-title">{b.title}</span>
                   <span className="count">{b.noteCount + b.reviewCount}</span>
                 </button>
               ))}
@@ -425,6 +426,7 @@ export default function App() {
                 <div className="head-left">
                   {searching ? (
                     <div style={{ minWidth: 0 }}>
+                      <div className="head-eyebrow">检索结果</div>
                       <h2>「{query.trim()}」</h2>
                       <div className="head-meta"><span className="card-date">{countLabel}</span></div>
                     </div>
@@ -432,9 +434,10 @@ export default function App() {
                     <>
                       <Cover src={activeBook.cover} title={activeBook.title} large />
                       <div style={{ minWidth: 0 }}>
+                        <div className="head-eyebrow">当前刊物</div>
                         <h2>{activeBook.title}</h2>
                         <div className="head-meta">
-                          <span>{activeBook.author || '佚名'}</span>
+                          <span className="author">{activeBook.author || '佚名'}</span>
                           <span className="chip">划线 {activeBook.noteCount}</span>
                           <span className="chip">想法 {activeBook.reviewCount}</span>
                           <span className="card-date">{countLabel}</span>
@@ -443,7 +446,8 @@ export default function App() {
                     </>
                   ) : (
                     <div style={{ minWidth: 0 }}>
-                      <h2>{starredOnly ? '星标卡片' : '全部卡片'}</h2>
+                      <div className="head-eyebrow">{starredOnly ? '星标专辑' : '总索引'}</div>
+                      <h2>{starredOnly ? '星标项目' : '全部索引'}</h2>
                       <div className="head-meta"><span className="card-date">{countLabel}</span></div>
                     </div>
                   )}
@@ -659,6 +663,11 @@ function Card({ card, onEdit, onChanged, onToast }: {
         <button title="编辑" aria-label="编辑" onClick={onEdit}><Icon name="pen" size={13} /></button>
         <button title="删除" aria-label="删除" onClick={remove}><Icon name="trash" size={13} /></button>
       </div>
+      <div className="card-eyebrow">
+        {card.tags.length
+          ? card.tags.join(' · ')
+          : card.kind === 'self' ? '编者按' : card.kind === 'thought' ? '想法' : '划线'}
+      </div>
       <p
         ref={textRef}
         className={`card-text${overflowed ? ' overflowed' : ''}`}
@@ -679,9 +688,6 @@ function Card({ card, onEdit, onChanged, onToast }: {
       )}
       {card.note && <p className="card-note">{card.note}</p>}
       <div className="card-meta">
-        {!!card.tags.length && (
-          <div className="tag-row">{card.tags.map((t) => <span key={t} className="chip small">{t}</span>)}</div>
-        )}
         <span className="card-source">
           {[card.bookTitle, card.chapterTitle].filter(Boolean).join(' / ') || '自建卡'}
         </span>
@@ -954,7 +960,7 @@ function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
           : '新卡片会自动进入队列。间隔重复讲究少而勤。';
     return (
       <div className="review">
-        <div className="review-top"><span>翻牌</span></div>
+        <h2 className="review-title">清样 · 翻牌回顾</h2>
         <div className="deck-done">
           <p className="review-text">{done ? '这副翻完了。' : '当前没有到期卡片'}</p>
           <p className="review-hint">{hint}</p>
@@ -968,8 +974,12 @@ function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
   const under = [queue[idx + 1], queue[idx + 2]];
   return (
     <div className="review">
+      <h2 className="review-title">清样 · 翻牌回顾</h2>
       <div className="review-top">
-        <span>剩余 {queue.length - idx} 张</span>
+        <div className="review-remaining">
+          <span className="hint-mono">剩余张数</span>
+          <span className="review-count">{queue.length - idx} 张</span>
+        </div>
         <button className="ghost" onClick={onExit}>退出（Esc）</button>
       </div>
       <div className="review-ticks" aria-hidden="true">
@@ -1089,7 +1099,7 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
     <div className="settings">
       <h2>设置</h2>
       <section>
-        <h3>微信读书 API Key</h3>
+        <h3>一、微信读书 API Key</h3>
         <p className="hint">
           {hasKey ? '钥匙串里已有 Key。再贴一张会覆盖。' : '还没有保存 Key。'}
           {' '}到 <a href="https://weread.qq.com/r/weread-skills" target="_blank" rel="noreferrer">weread.qq.com/r/weread-skills</a> 开通官方 Skills，
@@ -1110,7 +1120,7 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
         {testResult && <p className={testResult.startsWith('失败') ? 'err' : 'ok'}>{testResult}</p>}
       </section>
       <section>
-        <h3>同步</h3>
+        <h3>二、同步</h3>
         <p className="hint">
           上次全量同步：
           {status?.lastFullSync ? new Date(status.lastFullSync * 1000).toLocaleString() : '从未'}
@@ -1118,7 +1128,7 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
         <p className="hint">同步入口在顶栏。没有 Key 时按钮是关上的。</p>
       </section>
       <section>
-        <h3>关于</h3>
+        <h3>三、关于</h3>
         <p className="hint">数据目录：{status?.dataDir ?? '未知'}（mudflat.db）</p>
         <p className="hint">纯本地存储 · 无账号 · 无云同步</p>
       </section>
