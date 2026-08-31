@@ -76,8 +76,7 @@ jobs:
         run: npm ci
 
       - name: Verify release version
-        run: >-
-          node -e "const fs=require('node:fs'); const tauri=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8')).version; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')).version; const cargo=fs.readFileSync('src-tauri/Cargo.toml','utf8').match(/^version = \"([^\"]+)\"/m)?.[1]; const tag=process.env.GITHUB_REF_NAME; if (tauri!==pkg || tauri!==cargo || tag!=='v'+tauri) { console.error('Version mismatch: tag='+tag+', tauri='+tauri+', package='+pkg+', cargo='+cargo); process.exit(1); } console.log('Release version verified: '+tag);"
+        run: node .github/scripts/verify-release-version.mjs
 
       - name: Build installers and publish release
         uses: tauri-apps/tauri-action@v0.6.2
