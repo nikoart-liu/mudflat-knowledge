@@ -455,6 +455,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: var(--paper); padding: 10px 18px;
   font-family: var(--font-mono); font-size: 12px; z-index: 99; max-width: 70vw; border-radius: 0;
+  white-space: pre-line;
 }
 .err { color: var(--grade-again); }
 .ok { color: var(--grade-good); }
@@ -523,12 +524,42 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 }
 .deck-face.front .card-note { margin-top: 12px; }
 .deck-next-hint { margin-top: 14px; text-align: center; font-size: 12px; color: var(--ink-muted); flex-shrink: 0; }
-.review-tools { margin-top: 20px; display: flex; justify-content: center; }
+.review-tools { margin-top: 12px; display: flex; justify-content: center; gap: 16px; }
 .review-text { font-size: 19px; line-height: 1.9; white-space: pre-wrap; margin: 0; }
 .review-hint { color: var(--ink-muted); text-align: center; font-size: 13px; margin: 0; }
 
 /* 结算：居中文字 + 返回 */
 .deck-done { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 24px; text-align: center; }
+.deck-done-actions { display: flex; gap: 12px; margin-top: 8px; }
+
+/* 四档评分栏：翻面后出现，数字键 1–4 与点击一致。
+   全平面直角墨框；忘了用社论红、简单用成功绿，困难/记得保持墨色（不多加第三种强调色）。 */
+.review-rating {
+  margin-top: 20px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;
+}
+.rate-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 1px solid var(--editorial-line); background: var(--paper); color: var(--ink);
+  font-size: 14px; font-weight: 500; padding: 8px 18px; border-radius: 0;
+}
+.rate-btn kbd {
+  font-family: var(--font-mono); font-size: 10px; line-height: 1;
+  border: 1px solid var(--hairline); padding: 3px 5px; color: var(--ink-muted);
+}
+.rate-btn:hover:not(:disabled) { background: var(--selection); }
+.rate-btn:disabled { opacity: 0.45; cursor: default; }
+.rate-btn.rate-again:hover:not(:disabled) { color: var(--grade-again); border-color: var(--grade-again); }
+.rate-btn.rate-again:hover:not(:disabled) kbd { color: var(--grade-again); border-color: var(--grade-again); }
+.rate-btn.rate-easy:hover:not(:disabled) { color: var(--grade-good); border-color: var(--grade-good); }
+.rate-btn.rate-easy:hover:not(:disabled) kbd { color: var(--grade-good); border-color: var(--grade-good); }
+.rate-btn:focus-visible { outline: 2px solid var(--ember); outline-offset: 1px; }
+
+/* 评分成功后短暂展示的下次到期时间 */
+.deck-due-note {
+  margin-top: 14px; text-align: center; flex-shrink: 0;
+  font-family: var(--font-mono); font-size: 12px; color: var(--grade-good);
+  letter-spacing: 0.06em;
+}
 
 /* ---------- 设置：版权页 ---------- */
 .settings { max-width: 720px; margin: 0 auto; padding: 40px 32px 96px; }
@@ -556,6 +587,39 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
 .settings .row { display: flex; gap: 12px; margin-top: 16px; }
 .settings a { color: var(--ink); text-underline-offset: 3px; }
 .settings button.ghost { text-decoration: underline; text-underline-offset: 4px; }
+/* 批次三档选择（三、回顾）：墨实底表示当前档 */
+.batch-options button {
+  border: 1px solid var(--hairline); background: transparent; color: var(--ink);
+  font-size: 13px; padding: 6px 16px; border-radius: 0;
+}
+.batch-options button:hover:not(:disabled) { border-color: var(--ink); }
+.batch-options button.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+/* 搜索范围切换：mono 下划线小字钮（P1.3 搜索继承上下文） */
+.link-btn {
+  border: none; background: transparent; padding: 0;
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.link-btn:hover { color: var(--ember); }
+
+/* 编辑弹层：纳入翻牌回顾开关（R2） */
+.switch-row {
+  display: flex; align-items: center; gap: 10px; margin: 4px 0 0;
+  cursor: pointer; user-select: none;
+}
+.switch-row input {
+  width: 15px; height: 15px; margin: 0; accent-color: var(--ink); cursor: pointer;
+}
+.switch-row .switch-label { font-size: 13px; color: var(--ink); }
+.switch-hint { padding: 2px 0 12px; margin: 0; }
+
+/* 卡片墙上的低强调状态：已移出回顾（仍保留在墙与搜索中） */
+.excluded-flag {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.12em;
+  color: var(--ink-muted); border: 1px solid var(--hairline);
+  padding: 2px 6px; flex-shrink: 0;
+}
 
 /* 翻牌是唯一舞台：侧栏、检索、同步都退下 */
 .app.is-review .sidebar { display: none; }

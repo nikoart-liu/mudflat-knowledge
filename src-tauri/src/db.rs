@@ -132,11 +132,127 @@ CREATE INDEX IF NOT EXISTS idx_cards_remote ON cards(remote_id);
 CREATE INDEX IF NOT EXISTS idx_review_due ON review_state(due_at);
 "#;
 
+/// 当前 schema 版本。SCHEMA_SQL 永远保持 v0.1 形态；
+/// 之后所有 schema 变更只允许以幂等迁移追加（PRD 10.3）。
+pub const LATEST_VERSION: i64 = 1;
+
+/// v0 → v1（v0.2）：每书同步基线列 + 用户隐藏墓碑。
+/// - 基线列与远端最新计数分开存，供增量同步判断（R0）；
+/// - hidden_by_user 是「用户本地隐藏」墓碑，与远端 reconcile 删除分开（R4）；
+/// - 存量软删同步卡无法区分用户删除/远端删除，默认按用户隐藏，避免内容复活。
+pub const MIGRATION_V1_SQL: &str = "
+ALTER TABLE books ADD COLUMN synced_note_count INTEGER;
+ALTER TABLE books ADD COLUMN synced_review_count INTEGER;
+ALTER TABLE cards ADD COLUMN hidden_by_user INTEGER NOT NULL DEFAULT 0;
+UPDATE cards SET hidden_by_user=1 WHERE deleted=1;
+";
+
+/// 迁移清单：(目标版本, SQL)。按序执行，每个迁移在独立事务中恰好跑一次。
+const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_V1_SQL)];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaPlan {
+    /// 全新空库
+    Fresh,
+    /// 已是最新
+    Current,
+    /// 旧库需要从该版本升级
+    UpgradeFrom(i64),
+}
+
+pub fn user_version(conn: &Connection) -> DbResult<i64> {
+    conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+}
+
+fn set_user_version(conn: &Connection, v: i64) -> DbResult<()> {
+    conn.execute_batch(&format!("PRAGMA user_version={v};"))?;
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, name: &str) -> DbResult<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// 判断该连接需要哪种 schema 处理。库版本高于应用时直接报错，绝不打开覆盖。
+pub fn plan_schema(conn: &Connection) -> DbResult<SchemaPlan> {
+    let version = user_version(conn)?;
+    if version > LATEST_VERSION {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "数据库版本 v{version} 高于当前应用支持的 v{LATEST_VERSION}，请先升级应用；原库未被改动"
+        )));
+    }
+    if !table_exists(conn, "books")? {
+        return Ok(SchemaPlan::Fresh);
+    }
+    if version < LATEST_VERSION {
+        return Ok(SchemaPlan::UpgradeFrom(version));
+    }
+    Ok(SchemaPlan::Current)
+}
+
+/// 执行 schema 建立/迁移。幂等：Fresh 全量建表后跑全部迁移；UpgradeFrom 只跑缺的迁移。
+/// 每个迁移在独立事务中执行，失败即整体回滚，绝不留下半套列。
+pub fn apply_schema(conn: &Connection, plan: SchemaPlan) -> DbResult<()> {
+    match plan {
+        SchemaPlan::Current => return Ok(()),
+        SchemaPlan::Fresh => conn.execute_batch(SCHEMA_SQL)?,
+        SchemaPlan::UpgradeFrom(_) => conn.execute_batch(SCHEMA_SQL)?, // 幂等补齐缺失对象
+    }
+    let from = user_version(conn)?;
+    for (to, sql) in MIGRATIONS {
+        if *to <= from {
+            continue;
+        }
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(sql)?; // 出错时 tx 被 drop → 自动回滚
+        tx.commit()?;
+    }
+    set_user_version(conn, LATEST_VERSION)?;
+    Ok(())
+}
+
+fn io_err(e: std::io::Error) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+        Some(e.to_string()),
+    )
+}
+
+/// 升级前把原库连同 WAL 一并备份到同目录，文件名带来源版本与时间戳。
+/// 备份失败则中止迁移，原库保持原样。
+fn backup_before_upgrade(conn: &Connection, db_path: &Path, from_version: i64) -> DbResult<()> {
+    // 尽力把 WAL 折回主文件，保证单文件拷贝完整；失败不阻断（下面对 -wal 再兜底拷贝）
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = db_path.with_file_name(format!("mudflat.db.bak-v{from_version}-{stamp}"));
+    std::fs::copy(db_path, &backup).map_err(io_err)?;
+    let wal = db_path.with_extension("db-wal");
+    if wal.exists() {
+        let _ = std::fs::copy(&wal, backup.with_extension("db-wal"));
+    }
+    Ok(())
+}
+
 /// 打开数据库连接并确保 schema 就绪。
+/// - 库版本高于应用：报错拒绝打开（不覆盖、不降级）；
+/// - 旧库升级前自动备份，迁移失败保留原库并向上抛错（阻止启动覆盖）。
 pub fn open_db(app_data_dir: &Path) -> DbResult<Connection> {
-    let conn = Connection::open(app_data_dir.join("mudflat.db"))?;
+    let db_path = app_data_dir.join("mudflat.db");
+    let conn = Connection::open(&db_path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-    conn.execute_batch(SCHEMA_SQL)?;
+    let plan = plan_schema(&conn)?;
+    if let SchemaPlan::UpgradeFrom(v) = plan {
+        backup_before_upgrade(&conn, &db_path, v)?;
+    }
+    apply_schema(&conn, plan)?;
     Ok(conn)
 }
 
@@ -219,6 +335,24 @@ pub fn touch_book_synced(conn: &Connection, book_row_id: i64, now: i64) -> DbRes
     Ok(())
 }
 
+/// 记录某书「上次成功内容同步」的远端划线/想法计数（成功基线，R0）。
+pub fn set_book_sync_baseline(conn: &Connection, book_row_id: i64, note: i64, review: i64) -> DbResult<()> {
+    conn.execute(
+        "UPDATE books SET synced_note_count=?2, synced_review_count=?3 WHERE id=?1",
+        rusqlite::params![book_row_id, note, review],
+    )?;
+    Ok(())
+}
+
+/// 读取成功基线；从未成功同步过时为 (None, None)。
+pub fn book_sync_baseline(conn: &Connection, book_row_id: i64) -> DbResult<(Option<i64>, Option<i64>)> {
+    conn.query_row(
+        "SELECT synced_note_count, synced_review_count FROM books WHERE id=?1",
+        [book_row_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+}
+
 // ---------- cards ----------
 
 #[derive(Debug, Clone)]
@@ -235,7 +369,21 @@ pub struct UpsertCard<'a> {
     pub created_at: i64,
 }
 
-pub fn upsert_card(conn: &Connection, c: &UpsertCard, now: i64) -> DbResult<i64> {
+/// 插入或按 remote_id 更新同步卡。返回 (行 id, 是否新插入)。
+/// 用户隐藏墓碑（hidden_by_user=1）优先于远端内容：不复活为可见（R4）。
+/// 不触碰 excluded_from_review / note / starred 等用户字段（R2）。
+pub fn upsert_card(conn: &Connection, c: &UpsertCard, now: i64) -> DbResult<(i64, bool)> {
+    let existed: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM cards WHERE remote_id=?1",
+            [c.remote_id],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
     conn.execute(
         "INSERT INTO cards (kind, book_id, remote_id, chapter_uid, chapter_title, text, abstract_text, range_str, color_style, created_at, updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)
@@ -243,15 +391,20 @@ pub fn upsert_card(conn: &Connection, c: &UpsertCard, now: i64) -> DbResult<i64>
            kind=excluded.kind, book_id=excluded.book_id,
            chapter_uid=excluded.chapter_uid, chapter_title=excluded.chapter_title,
            text=excluded.text, abstract_text=excluded.abstract_text, range_str=excluded.range_str,
-           color_style=excluded.color_style, deleted=0, updated_at=excluded.updated_at",
+           color_style=excluded.color_style,
+           deleted=CASE WHEN cards.hidden_by_user=1 THEN 1 ELSE 0 END,
+           updated_at=excluded.updated_at",
         rusqlite::params![
             c.kind, c.book_row_id, c.remote_id, c.chapter_uid, c.chapter_title,
             c.text, c.abstract_text, c.range_str, c.color_style, c.created_at.max(now.saturating_sub(1))
         ],
     )?;
-    let row_id = conn.last_insert_rowid();
+    let row_id = match existed {
+        Some(id) => id, // 走的是 DO UPDATE 路径：last_insert_rowid 不会刷新，必须用预查的 id
+        None => conn.last_insert_rowid(),
+    };
     ensure_review_row(conn, row_id, now)?;
-    Ok(row_id)
+    Ok((row_id, existed.is_none()))
 }
 
 const CARD_SELECT_COLS: &str =
@@ -428,12 +581,18 @@ pub fn search_cards(conn: &Connection, q: &str, filter: &CardFilter, limit: i64)
     // trigram 需要 ≥3 字符；短词回退 LIKE 全表扫描（cards 量级数千，可接受）
     let use_fts = trimmed.chars().count() >= 3;
     let mut conds: Vec<String> = vec!["c.deleted=0".into()];
+    // PRD 11.8：FTS 路径把整句包成短语查询并转义内嵌引号，避免语法字符（" - OR 等）导致报错
+    let match_arg = if use_fts {
+        format!("\"{}\"", trimmed.replace('"', "\"\""))
+    } else {
+        trimmed.to_string()
+    };
     if use_fts {
         conds.push("c.id IN (SELECT rowid FROM cards_fts WHERE cards_fts MATCH ?1)".into());
     } else {
         conds.push("(c.text LIKE '%'||?1||'%' OR c.note LIKE '%'||?1||'%')".into());
     }
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(trimmed.to_string())];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(match_arg)];
     if let Some(bid) = filter.book_id {
         conds.push(format!("c.book_id=?{}", push_param(&mut params, bid)));
     }
@@ -494,9 +653,13 @@ pub fn set_starred(conn: &Connection, card_id: i64, starred: bool) -> DbResult<(
     Ok(())
 }
 
-/// 软删：从列表过滤但不破坏用户编辑；同步卡下次同步若仍存在会被 upsert 复活。
-pub fn soft_delete_card(conn: &Connection, card_id: i64) -> DbResult<()> {
-    conn.execute("UPDATE cards SET deleted=1 WHERE id=?1", [card_id])?;
+/// 用户对同步卡执行「隐藏」：写入用户墓碑并从所有视图移除。
+/// 与远端 reconcile 删除语义分开；同步 upsert 尊重该墓碑，不复活（R4）。
+pub fn hide_card_from_user(conn: &Connection, card_id: i64) -> DbResult<()> {
+    conn.execute(
+        "UPDATE cards SET deleted=1, hidden_by_user=1 WHERE id=?1",
+        [card_id],
+    )?;
     Ok(())
 }
 
@@ -507,15 +670,24 @@ pub fn hard_delete_card(conn: &Connection, card_id: i64) -> DbResult<()> {
     Ok(())
 }
 
-pub fn set_excluded_from_review(conn: &Connection, card_id: i64, excluded: bool) -> DbResult<()> {
+/// 移出/恢复回顾。恢复（excluded=false）时立即回到待回顾状态：due_at=now（R2）。
+pub fn set_excluded_from_review(conn: &Connection, card_id: i64, excluded: bool, now: i64) -> DbResult<()> {
     conn.execute(
         "UPDATE cards SET excluded_from_review=?2 WHERE id=?1",
         rusqlite::params![card_id, excluded as i64],
     )?;
+    if !excluded {
+        ensure_review_row(conn, card_id, now)?;
+        conn.execute(
+            "UPDATE review_state SET due_at=?2 WHERE card_id=?1",
+            rusqlite::params![card_id, now],
+        )?;
+    }
     Ok(())
 }
 
-/// reconcile：本次同步结果中不存在的远程卡软删。
+/// reconcile：本次同步结果中不存在的远程卡按「远端删除」软删。
+/// 只动 deleted/hidden_by_user，note/星标/标签/排除状态全部保留（R0/R2）。
 pub fn reconcile_cards(conn: &Connection, book_row_id: i64, present_remote_ids: &[String]) -> DbResult<usize> {
     let present: HashSet<&String> = present_remote_ids.iter().collect();
     let mut stmt = conn.prepare_cached(
@@ -529,7 +701,10 @@ pub fn reconcile_cards(conn: &Connection, book_row_id: i64, present_remote_ids: 
     let mut n = 0;
     for (id, remote_id) in rows {
         if !present.contains(&remote_id) {
-            conn.execute("UPDATE cards SET deleted=1 WHERE id=?1", [id])?;
+            conn.execute(
+                "UPDATE cards SET deleted=1, hidden_by_user=0 WHERE id=?1",
+                [id],
+            )?;
             n += 1;
         }
     }
@@ -657,6 +832,11 @@ pub fn load_review_state(conn: &Connection, card_id: i64) -> DbResult<Option<cra
 }
 
 // ---------- sync meta / settings ----------
+
+/// 回顾批次大小在 sync_meta 中的键。合法值 10/20/30，默认 20（R3）。
+pub const KEY_REVIEW_BATCH: &str = "review_batch_size";
+pub const REVIEW_BATCH_OPTIONS: [i64; 3] = [10, 20, 30];
+pub const DEFAULT_REVIEW_BATCH: i64 = 20;
 
 pub fn get_sync_meta(conn: &Connection, key: &str) -> DbResult<Option<String>> {
     let mut stmt = conn.prepare_cached("SELECT value FROM sync_meta WHERE key=?1")?;

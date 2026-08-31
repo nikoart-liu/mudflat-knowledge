@@ -198,20 +198,22 @@ fn toggle_starred(state: State<'_, Db>, id: i64, starred: bool) -> Result<(), St
 #[tauri::command]
 fn set_excluded_from_review(state: State<'_, Db>, id: i64, excluded: bool) -> Result<(), String> {
     let conn = state.lock().map_err(|e| e.to_string())?;
-    db::set_excluded_from_review(&conn, id, excluded).map_err(db_err)
+    // 恢复（excluded=false）时立即回到待回顾状态（due_at=now，R2）
+    db::set_excluded_from_review(&conn, id, excluded, now_secs()).map_err(db_err)
 }
 
+/// 删除语义（R4）：自建卡物理删除；同步卡写入「用户本地隐藏」墓碑，
+/// 之后同步也不会复活。确认文案由前端按卡别区分。
 #[tauri::command]
 fn delete_card(state: State<'_, Db>, id: i64) -> Result<(), String> {
     let conn = state.lock().map_err(|e| e.to_string())?;
-    // self 卡硬删；同步来的划线/想法软删（下次同步若仍存在会复活）
     let kind: String = conn
         .query_row("SELECT kind FROM cards WHERE id=?1", [id], |r| r.get(0))
         .map_err(db_err)?;
     if kind == "self" {
         db::hard_delete_card(&conn, id).map_err(db_err)
     } else {
-        db::soft_delete_card(&conn, id).map_err(db_err)
+        db::hide_card_from_user(&conn, id).map_err(db_err)
     }
 }
 
@@ -266,6 +268,34 @@ fn grade_review(state: State<'_, Db>, card_id: i64, rating: Rating) -> Result<Sr
     Ok(next)
 }
 
+// ---------- review settings (R3) ----------
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSettings {
+    pub batch_size: i64,
+}
+
+#[tauri::command]
+fn get_review_settings(state: State<'_, Db>) -> Result<ReviewSettings, String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    let size = db::get_sync_meta(&conn, db::KEY_REVIEW_BATCH)
+        .map_err(db_err)?
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| db::REVIEW_BATCH_OPTIONS.contains(v))
+        .unwrap_or(db::DEFAULT_REVIEW_BATCH);
+    Ok(ReviewSettings { batch_size: size })
+}
+
+#[tauri::command]
+fn set_review_batch_size(state: State<'_, Db>, size: i64) -> Result<(), String> {
+    if !db::REVIEW_BATCH_OPTIONS.contains(&size) {
+        return Err("每批张数仅支持 10 / 20 / 30".into());
+    }
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    db::set_sync_meta(&conn, db::KEY_REVIEW_BATCH, &size.to_string()).map_err(db_err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -298,6 +328,8 @@ pub fn run() {
             get_due_cards,
             grade_review,
             get_due_count,
+            get_review_settings,
+            set_review_batch_size,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

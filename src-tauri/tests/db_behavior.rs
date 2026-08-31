@@ -162,7 +162,7 @@ fn demo_flow_query_search_persist_review() {
     let due_after = db::due_cards(&conn, now, 30).unwrap();
     assert_eq!(due_after.len(), 8, "Again 的卡 10 分钟内不再出现在当前队列");
 
-    // ---- reconcile：第二次同步少了一条时软删、用户编辑保留 ----
+    // ---- reconcile：第二次同步少了一条时按远端删除软删、用户编辑保留 ----
     let keep = vec!["b-1-bm-0".to_string(), "b-1-bm-1".to_string()];
     let removed = db::reconcile_cards(&conn, db::find_book_row(&conn, "b-1").unwrap().unwrap(), &keep)
         .unwrap();
@@ -183,19 +183,19 @@ fn demo_flow_query_search_persist_review() {
 }
 
 #[test]
-fn upsert_conflict_preserves_user_fields_and_revives_soft_delete() {
-    let (_dir, conn) = tmp_db("conflict");
+fn user_hidden_card_is_not_revived_by_upsert_and_keeps_edits() {
+    let (_dir, conn) = tmp_db("tombstone");
     insert_demo_book(&conn, "b-x", "书X", &["原始划线文本"]);
 
-    // 用户改了 note 并软删
+    // 用户改了 note 并执行「隐藏」（用户墓碑）
     let card = &db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap()[0];
     db::update_card_note(&conn, card.id, "用户批注", 111).unwrap();
-    db::soft_delete_card(&conn, card.id).unwrap();
+    db::hide_card_from_user(&conn, card.id).unwrap();
     assert_eq!(db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap().len(), 0);
 
-    // 下次同步同 remote_id 再次出现：复活为 deleted=0 且保留 note
+    // 下次同步同 remote_id 再次出现：不得复活（R4），用户编辑保留在库中
     let book_row = db::find_book_row(&conn, "b-x").unwrap().unwrap();
-    db::upsert_card(
+    let (id, inserted) = db::upsert_card(
         &conn,
         &UpsertCard {
             kind: "highlight",
@@ -212,23 +212,117 @@ fn upsert_conflict_preserves_user_fields_and_revives_soft_delete() {
         222,
     )
     .unwrap();
-    let revived = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
-    assert_eq!(revived.len(), 1);
-    assert!(!revived[0].deleted);
-    assert_eq!(revived[0].note, "用户批注", "upsert 不得覆盖用户编辑");
+    assert_eq!(id, card.id);
+    assert!(!inserted);
+    assert_eq!(db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap().len(), 0,
+        "用户隐藏墓碑生效：upsert 不复活");
+    let hidden: (i64, i64, String) = conn
+        .query_row(
+            "SELECT deleted, hidden_by_user, note FROM cards WHERE id=?1",
+            [card.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(hidden, (1, 1, "用户批注".into()), "墓碑与用户批注都在");
 }
 
 #[test]
-fn excluded_card_leaves_review_queue_but_stays_in_wall() {
-    let (_dir, conn) = tmp_db("excluded");
-    insert_demo_book(&conn, "b-e", "书E", &["第一条", "第二条"]);
+fn reconcile_deleted_card_is_revived_when_remote_readds() {
+    let (_dir, conn) = tmp_db("reconcile-revive");
+    insert_demo_book(&conn, "b-r", "书R", &["远端又加回来了"]);
+    let book_row = db::find_book_row(&conn, "b-r").unwrap().unwrap();
+
+    // 远端删除（reconcile）：软删 + 清墓碑，与用户隐藏分开
+    db::reconcile_cards(&conn, book_row, &[]).unwrap();
+    assert_eq!(db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap().len(), 0);
+
+    // 远端重新出现：应复活（这不是用户决策的删除）
+    db::upsert_card(
+        &conn,
+        &UpsertCard {
+            kind: "highlight",
+            book_row_id: book_row,
+            remote_id: "b-r-bm-0",
+            chapter_uid: Some(1),
+            chapter_title: Some("第一章"),
+            text: "远端又加回来了",
+            abstract_text: None,
+            range_str: Some("1-2"),
+            color_style: 1,
+            created_at: 1_700_000_000,
+        },
+        333,
+    )
+    .unwrap();
+    let revived = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
+    assert_eq!(revived.len(), 1, "远端删除的卡在远端恢复后重新可见");
+    assert!(!revived[0].deleted);
+}
+
+#[test]
+fn excluded_restore_puts_card_due_immediately() {
+    let (_dir, conn) = tmp_db("excluded-restore");
+    insert_demo_book(&conn, "b-e2", "书E2", &["第一条", "第二条"]);
     let cards = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
-    db::set_excluded_from_review(&conn, cards[0].id, true).unwrap();
-    let wall = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
-    assert_eq!(wall.len(), 2);
-    let due = db::due_cards(&conn, 1_900_000_000, 30).unwrap();
-    assert_eq!(due.len(), 1, "excluded=0 的卡仍在队列，excluded=1 的不在");
-    assert_eq!(due[0].id, cards[1].id);
+    let now = 1_900_000_000i64;
+
+    db::set_excluded_from_review(&conn, cards[0].id, true, now).unwrap();
+    assert_eq!(db::due_count(&conn, now).unwrap(), 1, "移出后到期数减 1");
+    // 排除状态不影响墙与搜索
+    assert_eq!(db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap().len(), 2);
+    assert_eq!(db::search_cards(&conn, "第一条", &CardFilter::default(), 10).unwrap().len(), 1);
+
+    // 恢复：立即回到待回顾状态
+    db::set_excluded_from_review(&conn, cards[0].id, false, now + 100).unwrap();
+    let st = db::load_review_state(&conn, cards[0].id).unwrap().unwrap();
+    assert_eq!(st.due_at, now + 100, "恢复后 due_at=now，立即进入待回顾");
+    assert_eq!(db::due_count(&conn, now + 100).unwrap(), 2);
+}
+
+#[test]
+fn upsert_and_reconcile_preserve_excluded_state() {
+    let (_dir, conn) = tmp_db("excluded-preserve");
+    insert_demo_book(&conn, "b-p", "书P", &["保持排除"]);
+    let card = &db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap()[0];
+    db::set_excluded_from_review(&conn, card.id, true, 1_700_000_000).unwrap();
+
+    let book_row = db::find_book_row(&conn, "b-p").unwrap().unwrap();
+    db::upsert_card(
+        &conn,
+        &UpsertCard {
+            kind: "highlight",
+            book_row_id: book_row,
+            remote_id: "b-p-bm-0",
+            chapter_uid: Some(1),
+            chapter_title: Some("第一章"),
+            text: "保持排除（服务端更新）",
+            abstract_text: None,
+            range_str: Some("1-2"),
+            color_style: 1,
+            created_at: card.created_at,
+        },
+        1_700_000_500,
+    )
+    .unwrap();
+    db::reconcile_cards(&conn, book_row, &["b-p-bm-0".to_string()]).unwrap();
+    let after = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
+    assert_eq!(after.len(), 1);
+    assert!(after[0].excluded_from_review, "upsert 与 reconcile 均不重置排除状态");
+}
+
+#[test]
+fn fts_query_special_chars_do_not_error() {
+    // PRD 11.8：FTS 语法字符必须被当普通文本，不得让搜索报 500 式错误
+    let (_dir, conn) = tmp_db("fts-escape");
+    insert_demo_book(&conn, "b-f", "书F", &["带引号的\"文本\"一", "普通句子 alpha", "带连字符的-词组"]);
+    for q in ["\"文本", "alpha- beta", "OR NOT", "普通句子", "a-b-c"] {
+        let r = db::search_cards(&conn, q, &CardFilter::default(), 50);
+        assert!(r.is_ok(), "查询 {q:?} 不应报错：{:?}", r.err());
+    }
+    // 转义后仍能命中内容本身
+    let hit = db::search_cards(&conn, "普通句子", &CardFilter::default(), 50).unwrap();
+    assert_eq!(hit.len(), 1);
+    assert_eq!(hit[0].text, "普通句子 alpha");
 }
 
 #[test]

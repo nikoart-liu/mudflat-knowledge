@@ -6,8 +6,11 @@ import {
   type BookRow,
   type CardFilter,
   type CardRow,
+  type ReviewRating,
+  type ReviewSettings,
   type SettingsInfo,
   type SetupStatus,
+  type SrsState,
   type SyncEventPayload,
   type SyncSummary,
   type TagRow,
@@ -41,8 +44,34 @@ function explainError(e: unknown): string {
   return s;
 }
 
-const ICON_PATHS: Record<string, string> = {
-  layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+// 四档评分：数字键 1–4 与点击一致（R1）。文案用中文，Again 等枚举仅内部使用。
+const RATING_DEFS: { key: ReviewRating; num: number; label: string }[] = [
+  { key: 'again', num: 1, label: '忘了' },
+  { key: 'hard', num: 2, label: '困难' },
+  { key: 'good', num: 3, label: '记得' },
+  { key: 'easy', num: 4, label: '简单' },
+];
+
+const REVIEW_BATCH_OPTIONS = [10, 20, 30];
+const EXCLUDE_HINT_KEY = 'mudflat.exclude-hint-seen';
+
+function nowSecs(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/// 把距下次到期的秒数翻成「10 分钟后 / 明天 / 3 天后」（R1.4）。
+function humanizeDue(deltaSec: number): string {
+  if (deltaSec <= 0) return '现在';
+  const minutes = Math.round(deltaSec / 60);
+  if (minutes < 60) return `${Math.max(1, minutes)} 分钟后`;
+  const hours = Math.round(deltaSec / 3600);
+  if (hours < 24) return `${hours} 小时后`;
+  const days = Math.round(deltaSec / 86400);
+  if (days <= 1) return '明天';
+  return `${days} 天后`;
+}
+
+const ICON_PATHS: Record<string, string> = {  layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
   search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -93,6 +122,8 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [dueCount, setDueCount] = useState(0);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
+  // P1.3 搜索继承上下文：默认只在当前书/标签/星标范围内搜，可一键扩到全部卡片
+  const [searchAll, setSearchAll] = useState(false);
   const contentHeaderRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [chH, setChH] = useState(76);
@@ -142,7 +173,8 @@ export default function App() {
     const q = query.trim();
     try {
       if (q) {
-        const rows = await call<CardRow[]>('search_cards', { q, filter: emptyFilter() });
+        const filter = searchAll ? emptyFilter() : wallFilter();
+        const rows = await call<CardRow[]>('search_cards', { q, filter });
         setCards(rows);
         setCardTotal(rows.length);
         return;
@@ -157,7 +189,7 @@ export default function App() {
     } finally {
       setCardsReady(true);
     }
-  }, [view, query, wallFilter]);
+  }, [view, query, wallFilter, searchAll]);
 
   const loadMore = async () => {
     if (searching || loadingMore || cards.length >= cardTotal) return;
@@ -215,10 +247,19 @@ export default function App() {
       chan.onmessage = (ev) => {
         if (ev.stage === 'pulling') setSyncing(`同步 ${ev.current}/${ev.total}：${ev.bookTitle}`);
         else if (ev.stage === 'books') setSyncing(`已更新书目 ${ev.total} 本`);
+        else if (ev.stage === 'book_failed') setSyncing(`「${ev.bookTitle}」同步失败，继续下一本`);
         else if (ev.stage === 'done') setSyncing(null);
       };
       const summary: SyncSummary = await call('sync_all', { onProgress: chan });
-      showToast(`同步完成：${summary.booksSynced} 本 · 划线 ${summary.highlights} · 想法 ${summary.thoughts}`);
+      const parts = [`成功 ${summary.booksSynced} 本`];
+      if (summary.booksFailed > 0) parts.push(`失败 ${summary.booksFailed} 本`);
+      parts.push(`新增 ${summary.added} 张`, `移除 ${summary.removed} 张`);
+      let msg = `同步完成：${parts.join(' · ')}`;
+      if (summary.failures?.length) {
+        const names = summary.failures.map((f) => f.title).slice(0, 3).join('、');
+        msg += `\n失败书目：${names}${summary.failures.length > 3 ? ' 等' : ''}，下次同步会自动重试`;
+      }
+      showToast(msg);
       await refreshMeta();
       await reloadCards();
     } catch (e) {
@@ -246,6 +287,7 @@ export default function App() {
     setQuery('');
     setStarredOnly(false);
     setSelectedTagIds([]);
+    setSearchAll(false);
     setView({ name: 'cards', bookId: null });
   };
 
@@ -260,6 +302,7 @@ export default function App() {
 
   const goCards = (bookId: number | null) => {
     setQuery('');
+    setSearchAll(false);
     setView({ name: 'cards', bookId });
   };
 
@@ -292,8 +335,9 @@ export default function App() {
 
   const countLabel = (() => {
     if (searching) {
-      if (cards.length >= SEARCH_CAP) return `前 ${SEARCH_CAP} 条，请把词写得更具体`;
-      return `${cards.length} 张 · 正在搜全部卡片`;
+      const scope = !searchAll && filtered ? '正在搜当前范围' : '正在搜全部卡片';
+      if (cards.length >= SEARCH_CAP) return `前 ${SEARCH_CAP} 条 · ${scope}`;
+      return `${cards.length} 张 · ${scope}`;
     }
     if (cardTotal > cards.length) return `已显示 ${cards.length} / 共 ${cardTotal}`;
     return `${cards.length} 张`;
@@ -313,8 +357,8 @@ export default function App() {
           <input
             ref={searchRef}
             type="search"
-            placeholder="检索全部卡片…"
-            aria-label="检索全部卡片，按 / 聚焦"
+            placeholder={filtered ? '在当前范围检索…' : '检索全部卡片…'}
+            aria-label={filtered ? '在当前范围内检索卡片，按 / 聚焦' : '检索全部卡片，按 / 聚焦'}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Escape' && setQuery('')}
@@ -428,7 +472,16 @@ export default function App() {
                     <div style={{ minWidth: 0 }}>
                       <div className="head-eyebrow">检索结果</div>
                       <h2>「{query.trim()}」</h2>
-                      <div className="head-meta"><span className="card-date">{countLabel}</span></div>
+                      <div className="head-meta">
+                        <span className="card-date">{countLabel}</span>
+                        {filtered && (
+                          searchAll ? (
+                            <button className="link-btn" onClick={() => setSearchAll(false)}>只搜当前范围</button>
+                          ) : (
+                            <button className="link-btn" onClick={() => setSearchAll(true)}>搜索全部卡片</button>
+                          )
+                        )}
+                      </div>
                     </div>
                   ) : activeBook ? (
                     <>
@@ -522,6 +575,10 @@ export default function App() {
         <EditModal
           card={editing}
           onClose={() => setEditing(null)}
+          onPatched={async () => {
+            await refreshMeta();
+            await reloadCards();
+          }}
           onSaved={async () => {
             setEditing(null);
             await refreshMeta();
@@ -598,7 +655,10 @@ function EmptyWall({
     return (
       <div className="empty-setup">
         <p className="empty-title">没有找到「{query}」</p>
-        <p className="empty-body">检索范围是全部卡片。换个词，或按 Esc 退出检索。</p>
+        <p className="empty-body">
+          {filtered ? '检索范围是当前书、标签或星标，可点「搜索全部卡片」扩大范围。' : '检索范围是全部卡片。'}
+          换个词，或按 Esc 退出检索。
+        </p>
       </div>
     );
   }
@@ -649,6 +709,11 @@ function Card({ card, onEdit, onChanged, onToast }: {
     await call('delete_card', { id: card.id }).catch((e) => onToast(explainError(e)));
     onChanged();
   };
+  const isSelf = card.kind === 'self';
+  // 确认文案与真实数据行为一致（R4）：自建卡物理删除；同步卡写隐藏墓碑，同步也不会恢复
+  const confirmCopy = isSelf
+    ? { title: '永久删除', message: '永久删除这张自建卡？此操作不可撤销。', label: '永久删除' }
+    : { title: '隐藏卡片', message: '从泥滩知识中隐藏这张卡片？之后同步也不会恢复。', label: '隐藏卡片' };
   return (
     <>
     <article className={`card kind-${card.kind}${card.starred ? ' starred' : ''}${expanded ? ' expanded' : ''}`}>
@@ -661,12 +726,12 @@ function Card({ card, onEdit, onChanged, onToast }: {
       ><Icon name="star" size={13} /></button>
       <div className="card-actions">
         <button title="编辑" aria-label="编辑" onClick={onEdit}><Icon name="pen" size={13} /></button>
-        <button title="删除" aria-label="删除" onClick={remove}><Icon name="trash" size={13} /></button>
+        <button title={isSelf ? '删除' : '隐藏'} aria-label={isSelf ? '删除' : '隐藏'} onClick={remove}><Icon name="trash" size={13} /></button>
       </div>
       <div className="card-eyebrow">
         {card.tags.length
           ? card.tags.join(' · ')
-          : card.kind === 'self' ? '编者按' : card.kind === 'thought' ? '想法' : '划线'}
+          : isSelf ? '编者按' : card.kind === 'thought' ? '想法' : '划线'}
       </div>
       <p
         ref={textRef}
@@ -691,14 +756,15 @@ function Card({ card, onEdit, onChanged, onToast }: {
         <span className="card-source">
           {[card.bookTitle, card.chapterTitle].filter(Boolean).join(' / ') || '自建卡'}
         </span>
+        {card.excludedFromReview && <span className="excluded-flag">已移出回顾</span>}
         <span className="card-date">{fmtDate(card.createdAt)}</span>
       </div>
     </article>
     {confirming && (
       <ConfirmModal
-        title="删除卡片"
-        message="删除这张卡片？此操作不可撤销。"
-        confirmLabel="删除卡片"
+        title={confirmCopy.title}
+        message={confirmCopy.message}
+        confirmLabel={confirmCopy.label}
         onConfirm={confirmRemove}
         onCancel={() => setConfirming(false)}
       />
@@ -760,16 +826,19 @@ function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel }: {
   );
 }
 
-function EditModal({ card, onClose, onSaved, onToast }: {
+function EditModal({ card, onClose, onSaved, onPatched, onToast }: {
   card: CardRow;
   onClose: () => void;
   onSaved: (patch: { note: string; text: string }) => void;
+  /** 局部字段（排除状态等）即时生效但不关弹层时，刷新外部列表 */
+  onPatched?: (patch: { included: boolean }) => void;
   onToast: (m: string) => void;
 }) {
   const ref = useDialog(onClose);
   const [note, setNote] = useState(card.note);
   const [text, setText] = useState(card.text);
   const [tagName, setTagName] = useState('');
+  const [included, setIncluded] = useState(!card.excludedFromReview);
   const isSelf = card.kind === 'self';
   const save = async () => {
     if (isSelf && !text.trim()) {
@@ -797,6 +866,18 @@ function EditModal({ card, onClose, onSaved, onToast }: {
     await call('remove_tag', { cardId: card.id, name: t }).catch((e) => onToast(explainError(e)));
     onSaved({ note, text });
   };
+  // 纳入/移出回顾：即时生效不关弹层。恢复后立即进入待回顾状态由后端保证（R2）
+  const toggleIncluded = async (next: boolean) => {
+    const prev = included;
+    setIncluded(next);
+    try {
+      await call('set_excluded_from_review', { id: card.id, excluded: !next });
+      onPatched?.({ included: next });
+    } catch (e) {
+      setIncluded(prev);
+      onToast(explainError(e));
+    }
+  };
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" ref={ref} role="dialog" aria-modal="true" aria-labelledby="modal-edit-title" onClick={(e) => e.stopPropagation()}>
@@ -809,6 +890,15 @@ function EditModal({ card, onClose, onSaved, onToast }: {
         {!isSelf && (
           <textarea rows={5} value={note} onChange={(e) => setNote(e.target.value)} placeholder="写下你的想法…" aria-label="想法" autoFocus />
         )}
+        <label className="switch-row" title="关闭后此卡不再进入回顾队列，仍保留在卡片墙与搜索中">
+          <input
+            type="checkbox"
+            checked={included}
+            onChange={(e) => toggleIncluded(e.target.checked)}
+          />
+          <span className="switch-label">纳入翻牌回顾</span>
+        </label>
+        <p className="hint switch-hint">关闭后此卡不再进入回顾队列，仍保留在卡片墙与搜索中。</p>
         <div className="tag-editor">
           {card.tags.map((t) => (
             <button key={t} className="chip small deletable" onClick={() => removeTag(t)} aria-label={'移除标签 ' + t} title="点击移除">{t} ×</button>
@@ -877,62 +967,226 @@ function CreateModal({ onClose, onSaved, onToast }: {
   );
 }
 
-function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
+// 具名导出供前端交互测试直接渲染（PRD 12.1）
+export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
   onToast: (m: string) => void;
   onExit: () => void;
   hasKey: boolean;
   hasBooks: boolean;
 }) {
+  const [phase, setPhase] = useState<'entry' | 'review' | 'settling'>('entry');
+  const [entryReady, setEntryReady] = useState(false);
+  const [dueTotal, setDueTotal] = useState(0);
+  const [batchSize, setBatchSize] = useState(20);
   const [queue, setQueue] = useState<CardRow[]>([]);
   const [idx, setIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
+  const [grading, setGrading] = useState(false);
   const [flying, setFlying] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [dueNote, setDueNote] = useState<string | null>(null);
+  const [todayLeft, setTodayLeft] = useState(0);
+  const [excludeTarget, setExcludeTarget] = useState<CardRow | null>(null);
   const [editing, setEditing] = useState<CardRow | null>(null);
-  const loadingRef = useRef(false);
+  const [settling, setSettling] = useState<{ remaining: number; rated: Record<ReviewRating, number>; excluded: number } | null>(null);
+  const gradingRef = useRef(false);
   const flyingRef = useRef(false);
   const flippedRef = useRef(false);
   flippedRef.current = flipped;
+  const ratedRef = useRef<Record<ReviewRating, number>>({ again: 0, hard: 0, good: 0, easy: 0 });
+  const excludedRef = useRef(0);
 
+  // 进入页：今日到期总数 + 批次设置（R3.1/R3.2）
   useEffect(() => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
-    call<CardRow[]>('get_due_cards', { limit: 30 })
-      .then((c) => setQueue(c))
-      .catch((e) => onToast(explainError(e)))
-      .finally(() => setLoading(false));
-  }, [onToast]);
+    let alive = true;
+    Promise.all([
+      call<number>('get_due_count').catch(() => 0),
+      call<ReviewSettings>('get_review_settings').catch(() => ({ batchSize: 20 })),
+    ]).then(([due, settings]) => {
+      if (!alive) return;
+      setDueTotal(due);
+      setBatchSize(settings.batchSize);
+      setEntryReady(true);
+    });
+    return () => { alive = false; };
+  }, []);
 
-  const advance = () => {
-    if (flyingRef.current) return;
+  const startBatch = async () => {
+    // 取队列前重查真实到期数，作为「今日总剩余」的起点（R3.2）
+    const due = await call<number>('get_due_count').catch(() => dueTotal);
+    const cards = await call<CardRow[]>('get_due_cards', { limit: batchSize }).catch((e) => {
+      onToast(explainError(e));
+      return null;
+    });
+    if (!cards) return;
+    if (!cards.length) {
+      // 到期数在打开期间被清空（如另一次回顾）：回到进入页刷新
+      setDueTotal(due);
+      setEntryReady(true);
+      return;
+    }
+    ratedRef.current = { again: 0, hard: 0, good: 0, easy: 0 };
+    excludedRef.current = 0;
+    setQueue(cards);
+    setIdx(0);
+    setFlipped(false);
+    setDueTotal(due);
+    setTodayLeft(due);
+    setPhase('review');
+  };
+
+  const refreshDueTotal = async (): Promise<number> => {
+    try {
+      const n = await call<number>('get_due_count');
+      setDueTotal(n);
+      return n;
+    } catch {
+      return todayLeft;
+    }
+  };
+
+  // 结算：重查真实到期数，分支「今天翻完了 / 本批完成，还剩 N」（R3.3）
+  const settle = async () => {
+    let remaining = todayLeft;
+    try {
+      remaining = await call<number>('get_due_count');
+      setDueTotal(remaining);
+    } catch { /* 用本地估算兜底 */ }
+    setSettling({ remaining, rated: { ...ratedRef.current }, excluded: excludedRef.current });
+    setPhase('settling');
+  };
+
+  const flyOutThen = (after: () => void) => {
     flyingRef.current = true;
-    const card = queue[idx];
-    if (card) call('grade_review', { cardId: card.id, rating: 'good' }).catch((e) => onToast(explainError(e)));
     setFlying(true);
     window.setTimeout(() => {
       flyingRef.current = false;
       setFlying(false);
       setFlipped(false);
-      setIdx((i) => i + 1);
+      setDueNote(null);
+      after();
     }, 240);
   };
 
+  // 四档评分（R1）：只接受第一次请求；失败停留当前卡、进度不递增、可重试
+  const rate = async (rating: ReviewRating) => {
+    const card = queue[idx];
+    if (!card || gradingRef.current || flyingRef.current || !flippedRef.current) return;
+    gradingRef.current = true;
+    setGrading(true);
+    try {
+      const next: SrsState = await call('grade_review', { cardId: card.id, rating });
+      ratedRef.current[rating] += 1;
+      setTodayLeft((t) => Math.max(0, t - 1));
+      setDueNote(`下次回顾 · ${humanizeDue(next.due_at - nowSecs())}`);
+      gradingRef.current = false;
+      setGrading(false);
+      flyOutThen(() => {
+        const nextIdx = idx + 1;
+        setIdx(nextIdx);
+        if (nextIdx >= queue.length) void settle();
+      });
+    } catch (e) {
+      gradingRef.current = false;
+      setGrading(false);
+      onToast(explainError(e));
+    }
+  };
+
+  const doExclude = async (card: CardRow) => {
+    if (flyingRef.current || gradingRef.current) return;
+    flyingRef.current = true;
+    try {
+      await call('set_excluded_from_review', { id: card.id, excluded: true });
+      try { localStorage.setItem(EXCLUDE_HINT_KEY, '1'); } catch { /* 本地存储不可用时忽略 */ }
+      excludedRef.current += 1;
+      setTodayLeft((t) => Math.max(0, t - 1));
+      onToast('已移出回顾 · 卡片仍保留在卡片墙与搜索中');
+      flyingRef.current = false;
+      flyOutThen(() => {
+        const nextIdx = idx + 1;
+        setIdx(nextIdx);
+        if (nextIdx >= queue.length) void settle();
+      });
+    } catch (e) {
+      flyingRef.current = false;
+      onToast(explainError(e));
+    }
+  };
+
+  // 回顾正面「移出回顾」次级动作（R2）：首次给说明，之后直接执行
+  const requestExclude = () => {
+    const card = queue[idx];
+    if (!card || gradingRef.current || flyingRef.current) return;
+    let seen = false;
+    try { seen = !!localStorage.getItem(EXCLUDE_HINT_KEY); } catch { /* 忽略 */ }
+    if (seen) void doExclude(card);
+    else setExcludeTarget(card);
+  };
+
   const unflip = () => {
-    if (flyingRef.current || !flippedRef.current) return;
+    if (flyingRef.current || gradingRef.current || !flippedRef.current) return;
     setFlipped(false);
   };
 
-  const flipOrAdvance = () => {
-    if (flyingRef.current || editing) return;
-    if (flipped) advance();
-    else setFlipped(true);
+  // 空格/Enter 只负责翻面，不再自动提交 Good（R1.2）
+  const flip = () => {
+    if (flyingRef.current || gradingRef.current || flippedRef.current) return;
+    setFlipped(true);
+  };
+
+  const continueNextBatch = async () => {
+    const remaining = await refreshDueTotal();
+    if (remaining <= 0) {
+      setSettling(null);
+      setPhase('entry');
+      setEntryReady(true);
+      return;
+    }
+    const cards = await call<CardRow[]>('get_due_cards', { limit: batchSize }).catch((e) => {
+      onToast(explainError(e));
+      return null;
+    });
+    if (!cards?.length) {
+      setSettling(null);
+      setPhase('entry');
+      setEntryReady(true);
+      return;
+    }
+    ratedRef.current = { again: 0, hard: 0, good: 0, easy: 0 };
+    excludedRef.current = 0;
+    setSettling(null);
+    setQueue(cards);
+    setIdx(0);
+    setFlipped(false);
+    setTodayLeft(remaining);
+    setPhase('review');
   };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'BUTTON' || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-      if (e.key === 'Escape') { onExit(); return; }
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (e.key === 'Escape') {
+        if (!typing && !editing && !excludeTarget) { e.preventDefault(); onExit(); }
+        return;
+      }
+      if (typing || editing || excludeTarget) return;
+      const onButton = t?.tagName === 'BUTTON';
+      if (phase === 'entry') {
+        if (!onButton && e.key === 'Enter' && entryReady && dueTotal > 0) { e.preventDefault(); void startBatch(); }
+        return;
+      }
+      if (phase === 'settling') {
+        if (!onButton && e.key === 'Enter' && settling && settling.remaining > 0) { e.preventDefault(); void continueNextBatch(); }
+        return;
+      }
+      if ((e.key === '1' || e.key === '2' || e.key === '3' || e.key === '4') && flippedRef.current) {
+        e.preventDefault();
+        const def = RATING_DEFS[Number(e.key) - 1];
+        void rate(def.key);
+        return;
+      }
+      if (onButton) return; // 按钮焦点上让 Space/Enter 走默认点击，避免双触发
       if (e.key === 'z' || e.key === 'Z' || e.key === 'Backspace') {
         e.preventDefault();
         unflip();
@@ -940,45 +1194,96 @@ function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
       }
       if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
-        flipOrAdvance();
+        flip();
       }
-      if (e.key === 'ArrowRight' && flipped) advance();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [flipped, idx, queue, onExit, editing]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, idx, queue, flipped, grading, flying, editing, excludeTarget, entryReady, dueTotal, settling, onExit]);
 
-  if (loading) return <div className="review"><p className="hint">加载队列…</p></div>;
-  if (idx >= queue.length) {
-    const done = queue.length > 0;
-    const hint = done
-      ? `共翻阅 ${queue.length} 张 · 间隔重复讲究少而勤。`
-      : !hasKey
-        ? '先到设置填写 API Key，再同步。到期的卡片会排进这副牌。'
-        : !hasBooks
-          ? '同步之后，新卡片会自动进入队列。'
-          : '新卡片会自动进入队列。间隔重复讲究少而勤。';
+  // ---------- 进入页 ----------
+  if (phase === 'entry') {
+    const batchNow = Math.min(batchSize, Math.max(dueTotal, 0));
+    return (
+      <div className="review">
+        <h2 className="review-title">清样 · 翻牌回顾</h2>
+        {!entryReady ? (
+          <p className="hint">载入队列…</p>
+        ) : dueTotal <= 0 ? (
+          <div className="deck-done">
+            <p className="review-text">当前没有到期卡片</p>
+            <p className="review-hint">
+              {!hasKey
+                ? '先到设置填写 API Key，再同步。到期的卡片会排进这副牌。'
+                : !hasBooks
+                  ? '同步之后，新卡片会自动进入队列。'
+                  : '新卡片会自动进入队列。间隔重复讲究少而勤。'}
+            </p>
+            <button className="primary" onClick={onExit}>返回卡片墙</button>
+          </div>
+        ) : (
+          <div className="deck-done">
+            <p className="review-text">今日到期 {dueTotal} 张 · 本批 {batchNow} 张</p>
+            <p className="review-hint">每批 {batchSize} 张，完成一批再看今天还剩多少。设置里可改为 10 / 20 / 30。</p>
+            <div className="deck-done-actions">
+              <button className="primary" onClick={() => void startBatch()}>开始翻牌（Enter）</button>
+              <button className="ghost" onClick={onExit}>返回卡片墙</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ---------- 结算页 ----------
+  if (phase === 'settling' && settling) {
+    const processed = settling.rated.again + settling.rated.hard + settling.rated.good + settling.rated.easy + settling.excluded;
+    const dist = `忘了 ${settling.rated.again} · 困难 ${settling.rated.hard} · 记得 ${settling.rated.good} · 简单 ${settling.rated.easy}` +
+      (settling.excluded > 0 ? ` · 移出 ${settling.excluded}` : '');
+    const allDone = settling.remaining <= 0;
     return (
       <div className="review">
         <h2 className="review-title">清样 · 翻牌回顾</h2>
         <div className="deck-done">
-          <p className="review-text">{done ? '这副翻完了。' : '当前没有到期卡片'}</p>
-          <p className="review-hint">{hint}</p>
-          <button className="primary" onClick={onExit}>返回卡片墙</button>
+          <p className="review-text">{allDone ? '今天翻完了' : `本批完成，今天还剩 ${settling.remaining} 张`}</p>
+          <p className="review-hint">本批处理 {processed} 张（{dist}）</p>
+          <div className="deck-done-actions">
+            {allDone ? (
+              <button className="primary" onClick={onExit}>返回卡片墙</button>
+            ) : (
+              <>
+                <button className="primary" onClick={() => void continueNextBatch()}>继续下一批（Enter）</button>
+                <button className="ghost" onClick={onExit}>返回卡片墙</button>
+              </>
+            )}
+          </div>
         </div>
       </div>
     );
   }
 
   const card = queue[idx];
+  if (!card) {
+    // 竞态兜底：队列被清空时回到进入页
+    return (
+      <div className="review">
+        <h2 className="review-title">清样 · 翻牌回顾</h2>
+        <div className="deck-done">
+          <p className="review-text">当前没有到期卡片</p>
+          <button className="primary" onClick={onExit}>返回卡片墙</button>
+        </div>
+      </div>
+    );
+  }
   const under = [queue[idx + 1], queue[idx + 2]];
   return (
     <div className="review">
       <h2 className="review-title">清样 · 翻牌回顾</h2>
       <div className="review-top">
         <div className="review-remaining">
-          <span className="hint-mono">剩余张数</span>
-          <span className="review-count">{queue.length - idx} 张</span>
+          <span className="hint-mono">本批剩余 · 今日剩余</span>
+          <span className="review-count">{queue.length - idx} 张 · {todayLeft} 张</span>
         </div>
         <button className="ghost" onClick={onExit}>退出（Esc）</button>
       </div>
@@ -989,10 +1294,10 @@ function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
         className="deck-stage"
         role="button"
         tabIndex={0}
-        aria-label={flipped ? '翻过这张' : '翻面阅读'}
-        onClick={flipOrAdvance}
+        aria-label={flipped ? '翻过这张并用 1–4 评分' : '翻面阅读'}
+        onClick={flip}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flipOrAdvance(); }
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
         }}
       >
         {under.map((c, k) => c && (
@@ -1017,13 +1322,35 @@ function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
                 {card.abstractText && <blockquote>{card.abstractText}</blockquote>}
                 {card.note && <p className="card-note">{card.note}</p>}
               </div>
-              <span className="deck-next-hint">点击或空格翻过这张 · Z 退回背面</span>
+              {dueNote && <span className="deck-due-note">{dueNote}</span>}
+              <span className="deck-next-hint">按你此刻的熟悉程度选择</span>
             </div>
           </div>
         </div>
       </div>
       {flipped && (
+        <div className="review-rating" role="group" aria-label="记忆评分">
+          {RATING_DEFS.map((d) => (
+            <button
+              key={d.key}
+              className={`rate-btn rate-${d.key}`}
+              disabled={grading || flying}
+              onClick={(e) => { e.stopPropagation(); void rate(d.key); }}
+            >
+              <kbd>{d.num}</kbd>{d.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {flipped && (
         <div className="review-tools">
+          <button
+            className="ghost"
+            disabled={grading || flying}
+            onClick={(e) => { e.stopPropagation(); requestExclude(); }}
+          >
+            移出回顾
+          </button>
           <button
             className="ghost"
             onClick={(e) => { e.stopPropagation(); setEditing(card); }}
@@ -1032,6 +1359,19 @@ function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
           </button>
         </div>
       )}
+      {excludeTarget && (
+        <ConfirmModal
+          title="移出回顾"
+          message={`把「${excludeTarget.text.slice(0, 24)}${excludeTarget.text.length > 24 ? '…' : ''}」移出回顾？它仍会保留在卡片墙与搜索中，只是不再进入到期队列；之后可在编辑弹层重新纳入。`}
+          confirmLabel="移出回顾"
+          onConfirm={() => {
+            const c = excludeTarget;
+            setExcludeTarget(null);
+            if (c) void doExclude(c);
+          }}
+          onCancel={() => setExcludeTarget(null)}
+        />
+      )}
       {editing && (
         <EditModal
           card={editing}
@@ -1039,6 +1379,9 @@ function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
           onSaved={(patch) => {
             setQueue((qs) => qs.map((c) => (c.id === editing.id ? { ...c, note: patch.note, text: patch.text } : c)));
             setEditing(null);
+          }}
+          onPatched={(p) => {
+            setQueue((qs) => qs.map((c) => (c.id === editing.id ? { ...c, excludedFromReview: !p.included } : c)));
           }}
           onToast={onToast}
         />
@@ -1056,10 +1399,26 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
   const [status, setStatus] = useState<SettingsInfo | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [batchSize, setBatchSize] = useState<number | null>(null);
 
   useEffect(() => {
     call<SettingsInfo>('get_settings').then(setStatus).catch(() => {});
+    call<ReviewSettings>('get_review_settings')
+      .then((s) => setBatchSize(s.batchSize))
+      .catch(() => setBatchSize(20));
   }, []);
+
+  const saveBatch = async (size: number) => {
+    const prev = batchSize;
+    setBatchSize(size);
+    try {
+      await call('set_review_batch_size', { size });
+      await onKeyChange();
+    } catch (e) {
+      setBatchSize(prev);
+      onToast(explainError(e));
+    }
+  };
 
   const testConn = async () => {
     setTesting(true);
@@ -1125,10 +1484,27 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
           上次全量同步：
           {status?.lastFullSync ? new Date(status.lastFullSync * 1000).toLocaleString() : '从未'}
         </p>
-        <p className="hint">同步入口在顶栏。没有 Key 时按钮是关上的。</p>
+        <p className="hint">同步入口在顶栏。没有 Key 时按钮是关上的。单本书失败不影响其他书，下次同步自动重试。</p>
       </section>
       <section>
-        <h3>三、关于</h3>
+        <h3>三、回顾</h3>
+        <p className="hint">每批翻多少张。小批次完成感更真实，看得到今天还剩多少。</p>
+        <div className="row batch-options" role="group" aria-label="每批张数">
+          {REVIEW_BATCH_OPTIONS.map((n) => (
+            <button
+              key={n}
+              className={batchSize === n ? 'active' : ''}
+              aria-pressed={batchSize === n}
+              disabled={batchSize === null}
+              onClick={() => void saveBatch(n)}
+            >
+              {n} 张
+            </button>
+          ))}
+        </div>
+      </section>
+      <section>
+        <h3>四、关于</h3>
         <p className="hint">数据目录：{status?.dataDir ?? '未知'}（mudflat.db）</p>
         <p className="hint">纯本地存储 · 无账号 · 无云同步</p>
       </section>

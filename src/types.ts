@@ -68,13 +68,35 @@ export interface SyncEventPayload {
   bookTitle: string;
 }
 
+export interface FailedBook {
+  bookId: string;
+  title: string;
+  error: string;
+}
+
 export interface SyncSummary {
   booksTotal: number;
   booksSynced: number;
+  booksFailed: number;
+  failures: FailedBook[];
   highlights: number;
   thoughts: number;
+  added: number;
   removed: number;
 }
 
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
+
+// 后端 srs::SrsState 未加 rename_all，字段保持 snake_case
+export interface SrsState {
+  due_at: number;
+  interval_days: number;
+  ease: number;
+  reps: number;
+  lapses: number;
+}
+
+export interface ReviewSettings {
+  batchSize: number;
+}
 
