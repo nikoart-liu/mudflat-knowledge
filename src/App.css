@@ -13,7 +13,7 @@
   /* 墨与线 */
   --ink: #1c1917;          /* 正文墨 */
   --ink-strong: #000000;   /* 不直接使用；最深格仍是墨 */
-  --ink-muted: #71717a;    /* 辅助文字 */
+  --ink-muted: #6b6b74;    /* 辅助文字（paper 5.1:1 / panel 4.8:1，小字号也过 AA） */
   --ink-muted-deep: #5f5f66; /* selection 底上的辅助文字（保 AA） */
   --editorial-line: #27272a; /* 墨线：刊头 / 分栏重规则 */
   --hairline: #d4d4d8;     /* 栏线：一级细分割 */
@@ -21,7 +21,6 @@
   /* 琥珀点睛金 */
   --ember: #b45309;
   --ember-deep: #92400e;
-  --ember-text: #9a4a08;
 
   /* 身份底色 */
   --self-wash: #f0f4f8;      /* 自建卡：蓝灰杂志插页 */
@@ -67,6 +66,15 @@ html, body, #root {
 
 /* 刊物标题体系：衬线大字归刊头，正文永远黑体 */
 h1, h2, h3, .serif { font-family: var(--font-display); letter-spacing: -0.01em; }
+
+/* 中文排印细节：prose 面（卡片正文/批注/清样/引文/空态正文）按中文出版物惯例处理标点——
+   行首开引号半角（text-spacing-trim: trim-start）、行尾标点悬挂（hanging-punctuation）。
+   两者均为渐进增强，引擎不支持时按默认排法回退。 */
+.card-text, .card-note, .review-text, .empty-setup .empty-body,
+.abstract blockquote, .quote-box, .deck-face.front blockquote {
+  hanging-punctuation: first allow-end;
+  text-spacing-trim: trim-start;
+}
 
 .app { display: flex; flex-direction: column; height: 100vh; }
 
@@ -162,6 +170,9 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 }
 .side-item svg { color: var(--ink-muted); flex-shrink: 0; }
 .side-item.active svg { color: var(--ink); }
+/* selection 底上的小字计数与序号转 muted-deep：AA 规则（DESIGN.md 墨阶）在 hover/active 态同样生效 */
+.side-item:hover .count, .side-item:hover .book-no,
+.side-item.active .count, .side-item.active .book-no { color: var(--ink-muted-deep); }
 /* 目录里的书行：mono 序号 + 衬线书名 + mono 计数 */
 .book-no {
   font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted);
@@ -217,7 +228,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .cover-box img, .cover-lg img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover-fallback {
   writing-mode: vertical-rl; text-orientation: upright;
-  font-size: 8px; color: var(--ink-muted); letter-spacing: -1px;
+  font-size: 9px; color: var(--ink-muted); letter-spacing: -1px;
   overflow: hidden; line-height: 1; padding: 2px 0;
 }
 .cover-lg .cover-fallback {
@@ -418,6 +429,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .empty-setup .empty-title {
   margin: 0 0 10px; font-family: var(--font-display); font-style: italic;
   font-size: 22px; font-weight: 700; line-height: 1.3; color: var(--ink);
+  text-wrap: balance; /* 两行空态标题不孤行 */
 }
 .empty-setup .empty-body { margin: 0 0 20px; font-size: 14px; line-height: 1.7; color: var(--ink-muted); }
 .wall-more {
@@ -464,7 +476,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   width: min(560px, 90vw); background: var(--paper);
   border: 1px solid var(--ink); border-radius: 0; padding: 24px;
 }
-.modal h3 { margin: 0 0 16px; font-size: 17px; font-weight: 700; letter-spacing: 0; }
+.modal h3 { margin: 0 0 16px; font-size: 18px; font-weight: 700; letter-spacing: 0; text-wrap: balance; }
 .modal textarea, .modal input:not([type]) {
   width: 100%; padding: 10px 12px; border: 1px solid var(--hairline);
   border-radius: 0; font-size: 13px; resize: vertical; font-family: inherit;
@@ -510,11 +522,13 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .review-title {
   font-family: var(--font-display); font-size: 22px; font-weight: 700;
   letter-spacing: 0.3em; margin: 0 0 28px; text-align: center;
+  padding-left: 0.3em; /* 等值补偿尾随字距，居中字才真正居中 */
 }
 /* 本书清样的范围行：mono 弱化书名，压在标题与正文之间 */
 .review-scope {
   font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted);
   letter-spacing: 0.14em; margin: -18px 0 20px; text-align: center;
+  padding-left: 0.14em; /* 尾随字距补偿 */
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .review-top { width: 100%; display: flex; justify-content: space-between; align-items: flex-end; }
@@ -559,6 +573,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .deck-back-label {
   font-family: var(--font-mono); font-size: 11px; font-weight: 400;
   letter-spacing: 0.2em; color: var(--ink-muted);
+  padding-left: 0.2em; /* 尾随字距补偿 */
 }
 .deck-back-num { font-family: var(--font-display); font-size: 88px; font-weight: 700; color: var(--ink); letter-spacing: 0; line-height: 1; }
 .deck-back-num > span { font-size: 15px; color: var(--ink-muted); margin-left: 8px; font-family: var(--font-mono); font-weight: 400; }
@@ -675,6 +690,9 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
 .app.is-review .sidebar { display: none; }
 .app.is-review .search,
 .app.is-review .top-sync { display: none; }
+
+/* 版权页阅读时检索退下：检索只在卡片墙上有意义，留着只是一个会吃字不出结果的输入框 */
+.app.is-settings .search { display: none; }
 
 /* ---------- 动效纪律 ---------- */
 @media (prefers-reduced-motion: reduce) {

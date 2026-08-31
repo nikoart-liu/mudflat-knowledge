@@ -14,11 +14,6 @@ fn tmp_db(name: &str) -> (std::path::PathBuf, rusqlite::Connection) {
     (dir.clone(), db::open_db(&dir).unwrap())
 }
 
-// 使用 std::env::temp_dir 生成唯一目录
-fn temp_dir_path() -> std::path::PathBuf {
-    std::env::temp_dir()
-}
-
 fn insert_demo_book(conn: &rusqlite::Connection, wid: &str, title: &str, texts: &[&str]) -> i64 {
     db::upsert_book(
         conn,
@@ -49,7 +44,8 @@ fn insert_demo_book(conn: &rusqlite::Connection, wid: &str, title: &str, texts: 
                 color_style: (i as i64 % 5) + 1,
                 created_at: 1_700_000_000 + i as i64 * 86400,
             },
-            1_700_000_000,
+            // 划线时间在前、同步时刻在其后：与真实语义一致（created_at 只被防未来的钳制）
+            1_700_000_000 + i as i64 * 86400 + 60,
         )
         .unwrap();
     }
@@ -77,8 +73,8 @@ fn demo_flow_query_search_persist_review() {
         ],
     );
     let b2 = insert_demo_book(&conn, "b-2", "第二本书", &["别把「记忆」写在这里也行。"]);
-    assert_eq!(db::find_book_row(&conn, "b-2").unwrap().is_some(), true);
-    drop(b2);
+    assert!(db::find_book_row(&conn, "b-2").unwrap().is_some());
+    let _ = b2;
 
     // ---- 卡片墙：24 不要求（此处 9 条），但过滤正确 ----
     let all = db::query_cards(&conn, &CardFilter::default(), 500, 0).unwrap();
@@ -308,6 +304,61 @@ fn upsert_and_reconcile_preserve_excluded_state() {
     let after = db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap();
     assert_eq!(after.len(), 1);
     assert!(after[0].excluded_from_review, "upsert 与 reconcile 均不重置排除状态");
+}
+
+#[test]
+fn upsert_keeps_remote_highlight_time_and_self_heals() {
+    // created_at 必须是远端 createTime（真实划线时间），不是同步时刻；
+    // 旧库把 created_at 固化成同步时刻的数据，靠下次同步用远端值覆盖自愈。
+    let (_dir, conn) = tmp_db("created-at");
+    let book_row = insert_demo_book(&conn, "b-c", "时间书", &["时间锚点"]);
+    // 模拟旧库污染：created_at 已被钳成同步时刻
+    conn.execute("UPDATE cards SET created_at=1_700_000_060 WHERE remote_id='b-c-bm-0'", [])
+        .unwrap();
+
+    let highlight_time = 1_600_000_000i64; // 2020-09，远早于同步时刻
+    let (id, inserted) = db::upsert_card(
+        &conn,
+        &UpsertCard {
+            kind: "highlight",
+            book_row_id: book_row,
+            remote_id: "b-c-bm-0",
+            chapter_uid: Some(1),
+            chapter_title: Some("第一章"),
+            text: "时间锚点（远端原文）",
+            abstract_text: None,
+            range_str: Some("1-2"),
+            color_style: 1,
+            created_at: highlight_time,
+        },
+        1_700_000_100,
+    )
+    .unwrap();
+    assert!(!inserted);
+    let card = &db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap()[0];
+    assert_eq!(card.id, id);
+    assert_eq!(card.created_at, highlight_time, "created_at 修回真实划线时间，而非同步时间");
+
+    // 防时钟偏差：远端时间跑到本地未来时钳到同步时刻
+    db::upsert_card(
+        &conn,
+        &UpsertCard {
+            kind: "highlight",
+            book_row_id: book_row,
+            remote_id: "b-c-bm-0",
+            chapter_uid: Some(1),
+            chapter_title: Some("第一章"),
+            text: "时间锚点（远端原文）",
+            abstract_text: None,
+            range_str: Some("1-2"),
+            color_style: 1,
+            created_at: 1_900_000_000,
+        },
+        1_700_000_200,
+    )
+    .unwrap();
+    let card = &db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap()[0];
+    assert_eq!(card.created_at, 1_700_000_200, "未来时间戳钳到同步时刻");
 }
 
 #[test]

@@ -1,9 +1,10 @@
 pub mod db;
 mod gateway;
-mod keychain;
+mod keystore;
 pub mod srs;
 mod sync;
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -24,11 +25,14 @@ fn db_err(e: rusqlite::Error) -> String {
     e.to_string()
 }
 
-fn init_db(app: &tauri::AppHandle) -> Result<Mutex<rusqlite::Connection>, String> {
-    let dir = app
-        .path()
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
         .app_data_dir()
-        .map_err(|e| format!("数据目录解析失败: {e}"))?;
+        .map_err(|e| format!("数据目录解析失败: {e}"))
+}
+
+fn init_db(app: &tauri::AppHandle) -> Result<Mutex<rusqlite::Connection>, String> {
+    let dir = data_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("数据目录创建失败: {e}"))?;
     let conn = db::open_db(&dir).map_err(db_err)?;
     Ok(Mutex::new(conn))
@@ -44,14 +48,15 @@ pub struct SetupStatus {
 }
 
 #[tauri::command]
-fn get_setup_status(state: State<'_, Db>) -> Result<SetupStatus, String> {
+fn get_setup_status(app: tauri::AppHandle, state: State<'_, Db>) -> Result<SetupStatus, String> {
     let has_books = {
         let conn = state.lock().map_err(|e| e.to_string())?;
         conn.query_row("SELECT COUNT(*) FROM books", [], |r| r.get::<_, i64>(0))
             .map_err(db_err)?
             > 0
     };
-    Ok(SetupStatus { has_key: keychain::has_key(), has_books })
+    let has_key = keystore::has_key(&data_dir(&app)?);
+    Ok(SetupStatus { has_key, has_books })
 }
 
 #[derive(serde::Serialize)]
@@ -72,13 +77,15 @@ fn get_settings(app: tauri::AppHandle, state: State<'_, Db>) -> Result<Settings,
 }
 
 #[tauri::command]
-async fn save_api_key(key: String) -> Result<(), String> {
-    tokio::task::block_in_place(|| keychain::set_key(key.trim()).map_err(|e| e.to_string()))
+async fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    tokio::task::block_in_place(|| keystore::set_key(&dir, key.trim()).map_err(|e| e.to_string()))
 }
 
 #[tauri::command]
-async fn clear_api_key() -> Result<(), String> {
-    tokio::task::block_in_place(|| keychain::clear_key().map_err(|e| e.to_string()))
+async fn clear_api_key(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    tokio::task::block_in_place(|| keystore::clear_key(&dir).map_err(|e| e.to_string()))
 }
 
 /// 用输入框中的 key 临时测试：调一次 notebooks{count:1}，成功返回书本总数。
@@ -99,14 +106,64 @@ async fn test_connection(key: String) -> Result<i64, String> {
         })
 }
 
+/// 在系统默认浏览器里打开外部链接（如设置页的微信读书 Skills 开通页）。
+/// 只放行 http/https 且不含空白/控制字符的 URL；子进程由独立线程收尸，不阻塞命令。
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("仅支持打开 http/https 链接".into());
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("URL 含非法字符".into());
+    }
+    match open_with_system_browser(&url).spawn() {
+        Ok(mut child) => {
+            // wait 交给独立线程，避免留下僵尸进程；open/xdg-open 都会立即返回。
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
+        Err(e) => Err(format!("打开浏览器失败: {e}")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_with_system_browser(url: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("open");
+    cmd.arg(url);
+    cmd
+}
+
+#[cfg(target_os = "linux")]
+fn open_with_system_browser(url: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(url);
+    cmd
+}
+
+#[cfg(target_os = "windows")]
+fn open_with_system_browser(url: &str) -> std::process::Command {
+    // explorer.exe 会把 URL 交给默认浏览器，且不经过 cmd 转义。
+    let mut cmd = std::process::Command::new("explorer");
+    cmd.arg(url);
+    cmd
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn open_with_system_browser(_url: &str) -> std::process::Command {
+    panic!("当前平台不支持打开外部浏览器");
+}
+
 
 // ---------- sync ----------
 
 #[tauri::command]
-async fn sync_all(on_progress: tauri::ipc::Channel<SyncEvent>, state: State<'_, Db>) -> Result<sync::SyncSummary, String> {
-    let api_key = match keychain::get_key() {
+async fn sync_all(app: tauri::AppHandle, on_progress: tauri::ipc::Channel<SyncEvent>, state: State<'_, Db>) -> Result<sync::SyncSummary, String> {
+    let dir = data_dir(&app)?;
+    let api_key = match keystore::get_key(&dir) {
         Ok(k) => k,
-        Err(keychain::KeyError::NotFound) => {
+        Err(keystore::KeyError::NotFound) => {
             return Err("尚未保存 API Key，请先到设置页填写并保存".into())
         }
         Err(e) => return Err(format!("读取 API Key 失败：{e}（可到设置页重新保存）")),
@@ -310,6 +367,7 @@ pub fn run() {
             save_api_key,
             clear_api_key,
             test_connection,
+            open_external,
             sync_all,
             list_books,
             set_book_sync_reviews,

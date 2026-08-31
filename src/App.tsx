@@ -67,9 +67,21 @@ function explainError(e: unknown): string {
     return '还没有 Key。到设置里粘贴以 wrk- 开头的微信读书 API Key。';
   }
   if (/读取 API Key 失败/.test(s)) {
-    return '读钥匙串失败。到设置里重新保存 API Key。';
+    return '读取 Key 失败。到设置里重新保存 API Key。';
   }
   return s;
+}
+
+// 微信读书 Skills 开通页：设置页里的外链，点击调系统默认浏览器打开。
+const WEREAD_SKILLS_URL = 'https://weread.qq.com/r/weread-skills';
+
+/// 外链打开：Tauri 里走后端命令唤起系统浏览器；纯浏览器环境（vite dev 直开）回退 window.open。
+async function openExternal(url: string): Promise<void> {
+  try {
+    await call('open_external', { url });
+  } catch {
+    window.open(url, '_blank', 'noopener');
+  }
 }
 
 // 四档评分：数字键 1–4 与点击一致（R1）。文案用中文，Again 等枚举仅内部使用。
@@ -290,6 +302,7 @@ export default function App() {
       chan.onmessage = (ev) => {
         if (ev.stage === 'pulling') setSyncing(`同步 ${ev.current}/${ev.total}：${ev.bookTitle}`);
         else if (ev.stage === 'books') setSyncing(`已更新书目 ${ev.total} 本`);
+        else if (ev.stage === 'repair') setSyncing(`一次性修复卡片时间：全量重拉 ${ev.total} 本书`);
         else if (ev.stage === 'book_failed') setSyncing(`「${ev.bookTitle}」同步失败，继续下一本`);
         else if (ev.stage === 'done') setSyncing(null);
       };
@@ -406,7 +419,7 @@ export default function App() {
   const readingActive = reading && view.name === 'cards' && !searching;
 
   return (
-    <div className={`app${reviewing ? ' is-review' : ''}${readingActive ? ' is-reading' : ''}`}>
+    <div className={`app${reviewing ? ' is-review' : ''}${readingActive ? ' is-reading' : ''}${view.name === 'settings' ? ' is-settings' : ''}`}>
       <header className="topbar">
         <div className="logo">
           <img className="mark" src="/logo-mark.svg" width={20} height={20} alt="" />
@@ -730,7 +743,7 @@ function EmptyWall({
   if (hasKey && !hasBooks) {
     return (
       <div className="empty-setup">
-        <p className="empty-title">Key 已经在钥匙串里，墙上还是空的</p>
+        <p className="empty-title">Key 已经存好，墙上还是空的</p>
         <p className="empty-body">同步一次，微信读书里的划线会出现在这里。</p>
         <button className="primary" onClick={onSync} disabled={!!syncing}>{syncing ?? '同步'}</button>
       </div>
@@ -1534,7 +1547,7 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
     try {
       await call('save_api_key', { key: key.trim() });
       await onKeyChange();
-      onToast('API Key 已存入钥匙串。点顶栏「同步」接进划线。');
+      onToast('API Key 已保存到本机。点顶栏「同步」接进划线。');
     } catch (e) {
       onToast(explainError(e));
     }
@@ -1557,8 +1570,8 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
       <section>
         <h3>一、微信读书 API Key</h3>
         <p className="hint">
-          {hasKey ? '钥匙串里已有 Key。再贴一张会覆盖。' : '还没有保存 Key。'}
-          {' '}到 <a href="https://weread.qq.com/r/weread-skills" target="_blank" rel="noreferrer">weread.qq.com/r/weread-skills</a> 开通官方 Skills，
+          {hasKey ? '本机已存有 Key。再贴一张会覆盖。' : '还没有保存 Key。'}
+          {' '}到 <a href={WEREAD_SKILLS_URL} onClick={(e) => { e.preventDefault(); void openExternal(WEREAD_SKILLS_URL); }}>weread.qq.com/r/weread-skills</a> 开通官方 Skills，
           签发以 <code>wrk-</code> 或 <code>WRK-</code> 开头的 Key 后粘贴到这里。
         </p>
         <input
@@ -1570,7 +1583,7 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
         />
         <div className="row">
           <button onClick={testConn} disabled={testing || !key.trim()}>{testing ? '测试中…' : '测试连接'}</button>
-          <button className="primary" onClick={saveKey} disabled={!key.trim()}>保存到钥匙串</button>
+          <button className="primary" onClick={saveKey} disabled={!key.trim()}>保存到本机</button>
           <button className="ghost" onClick={clearKey} disabled={!hasKey && !key.trim()}>清除</button>
         </div>
         {testResult && <p className={testResult.startsWith('失败') ? 'err' : 'ok'}>{testResult}</p>}

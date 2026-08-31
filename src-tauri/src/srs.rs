@@ -56,7 +56,7 @@ pub fn schedule(state: &SrsState, rating: Rating, now: i64) -> SrsState {
         }
         Rating::Easy => {
             s.interval_days =
-                if state.reps == 0 { 3.0 } else { ((state.interval_days * state.ease * 1.3)).max(MIN_INTERVAL_DAYS) };
+                if state.reps == 0 { 3.0 } else { (state.interval_days * state.ease * 1.3).max(MIN_INTERVAL_DAYS) };
             s.reps += 1;
             s.due_at = now + (s.interval_days * DAY).round() as i64;
         }
@@ -125,14 +125,12 @@ mod tests {
         s = schedule(&s, Rating::Good, NOW);
         assert_eq!(s.reps, 2);
         assert!(s.interval_days > 1.0);
-        let t = s;
         s = schedule(&s, Rating::Again, NOW);
         assert_eq!(s.interval_days, 0.0);
         assert_eq!(s.reps, 0);
         // 又一次成功后从 1 天重新起步
         let g = schedule(&s, Rating::Good, NOW);
         assert_eq!(g.interval_days, 1.0);
-        drop(t);
     }
 
     #[test]

@@ -77,6 +77,13 @@ fn chapter_map(chapters: &[gateway::ChapterInfo]) -> std::collections::HashMap<i
     chapters.iter().map(|c| (c.chapter_uid, c.title.clone())).collect()
 }
 
+/// 一次性修复（KEY_CREATED_AT_REPAIR）：旧版入库把 created_at 钳成了同步时刻，
+/// 而远端 createTime 才是真实划线时间。修复标记缺失时返回 true，
+/// 由调用方清空全部基线强制本次全量重拉，让 upsert_card 用远端值自愈。
+fn needs_created_at_repair(conn: &rusqlite::Connection) -> rusqlite::Result<bool> {
+    Ok(db::get_sync_meta(conn, db::KEY_CREATED_AT_REPAIR)?.is_none())
+}
+
 pub async fn run_sync(
     state: &Mutex<rusqlite::Connection>,
     api_key: &str,
@@ -106,6 +113,22 @@ pub async fn run_sync(
         }
     }
     emit(&on_progress, "books", notebooks.len() as i64, notebooks.len() as i64, "");
+
+    // 1.5 一次性修复：created_at 曾被旧版钳成同步时刻。清空基线强制本次全量重拉，
+    // 用远端 createTime 修回真实划线时间；跑完才写修复标记，失败书靠基线缺失下次重试。
+    {
+        let repair_needed = {
+            let conn = state.lock().map_err(|e| e.to_string())?;
+            needs_created_at_repair(&conn).map_err(|e| e.to_string())?
+        };
+        if repair_needed {
+            let conn = state.lock().map_err(|e| e.to_string())?;
+            let cleared = db::clear_book_sync_baselines(&conn).map_err(|e| e.to_string())?;
+            if cleared > 0 {
+                emit(&on_progress, "repair", 0, cleared as i64, "");
+            }
+        }
+    }
 
     let now = chrono_now();
     let mut summary = SyncSummary { books_total: notebooks.len(), ..Default::default() };
@@ -167,10 +190,13 @@ pub async fn run_sync(
         }
     }
 
-    // 3. 写 sync_meta
+    // 3. 写 sync_meta：本轮已跑完（失败书基线缺失，下次自动重试），
+    //    落 created_at 修复标记，避免每次同步都全量重拉。
     {
         let conn = state.lock().map_err(|e| e.to_string())?;
         db::set_sync_meta(&conn, "last_full_sync", &now.to_string())
+            .map_err(|e| e.to_string())?;
+        db::set_sync_meta(&conn, db::KEY_CREATED_AT_REPAIR, &now.to_string())
             .map_err(|e| e.to_string())?;
     }
 
@@ -330,6 +356,25 @@ mod tests {
         for (n, rv) in [(4, 1), (3, 2), (2, 0)] {
             assert!(needs_pull(&conn, id, n, rv).unwrap(), "任一计数变化都要拉取 ({n},{rv})");
         }
+    }
+
+    #[test]
+    fn created_at_repair_clears_baselines_once() {
+        let conn = mem();
+        let id = book(&conn, "b1");
+        db::set_book_sync_baseline(&conn, id, 3, 1).unwrap();
+        assert!(!needs_pull(&conn, id, 3, 1).unwrap(), "前置：基线一致时本应跳过");
+
+        // 修复标记缺失：判定需要修复，清基线后即使计数一致也必须全量重拉
+        assert!(needs_created_at_repair(&conn).unwrap(), "无修复标记时需要全量重拉");
+        assert_eq!(db::clear_book_sync_baselines(&conn).unwrap(), 1);
+        assert!(needs_pull(&conn, id, 3, 1).unwrap(), "基线被清空后必须拉取");
+
+        // 跑完写入标记后：不再触发修复，基线恢复后回到正常增量
+        db::set_sync_meta(&conn, db::KEY_CREATED_AT_REPAIR, "1").unwrap();
+        assert!(!needs_created_at_repair(&conn).unwrap(), "修复只做一次");
+        db::set_book_sync_baseline(&conn, id, 3, 1).unwrap();
+        assert!(!needs_pull(&conn, id, 3, 1).unwrap());
     }
 
     #[test]

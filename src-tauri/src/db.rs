@@ -353,6 +353,16 @@ pub fn book_sync_baseline(conn: &Connection, book_row_id: i64) -> DbResult<(Opti
     )
 }
 
+/// 一次性 created_at 修复：清空全部书的同步基线（置 NULL）并返回受影响书数。
+/// 基线缺失的语义是「一律拉取」（见 sync::needs_pull），于是下次同步强制全量重拉，
+/// 让 upsert_card 用远端 createTime 修回被旧版钳成同步时刻的 created_at。
+pub fn clear_book_sync_baselines(conn: &Connection) -> DbResult<usize> {
+    conn.execute(
+        "UPDATE books SET synced_note_count=NULL, synced_review_count=NULL",
+        [],
+    )
+}
+
 // ---------- cards ----------
 
 #[derive(Debug, Clone)]
@@ -366,12 +376,15 @@ pub struct UpsertCard<'a> {
     pub abstract_text: Option<&'a str>,
     pub range_str: Option<&'a str>,
     pub color_style: i64,
+    /// 远端内容创建时间（划线/想法的 createTime，unix 秒）——卡片上展示的「划线时间」
     pub created_at: i64,
 }
 
 /// 插入或按 remote_id 更新同步卡。返回 (行 id, 是否新插入)。
 /// 用户隐藏墓碑（hidden_by_user=1）优先于远端内容：不复活为可见（R4）。
 /// 不触碰 excluded_from_review / note / starred 等用户字段（R2）。
+/// created_at 始终写远端 createTime（真实划线时间），冲突时同样覆盖：
+/// 远端是权威源，重复同步能自愈旧库把 created_at 污染成同步时刻的数据。
 pub fn upsert_card(conn: &Connection, c: &UpsertCard, now: i64) -> DbResult<(i64, bool)> {
     let existed: Option<i64> = conn
         .query_row(
@@ -384,19 +397,24 @@ pub fn upsert_card(conn: &Connection, c: &UpsertCard, now: i64) -> DbResult<(i64
             rusqlite::Error::QueryReturnedNoRows => Ok(None),
             other => Err(other),
         })?;
+    // created_at 语义 = 远端内容创建时间（划线/想法的 createTime），即「当时的划线时间」，
+    // 不是同步时刻。只防远端时钟跑到本地未来：钳到 now；过去的真实时间必须原样保留。
+    // 远端异常缺省（<=0）时回退为同步时刻，避免出现 1970 卡。
+    let created_at = if c.created_at > 0 { c.created_at.min(now) } else { now };
     conn.execute(
         "INSERT INTO cards (kind, book_id, remote_id, chapter_uid, chapter_title, text, abstract_text, range_str, color_style, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
          ON CONFLICT(remote_id) DO UPDATE SET
            kind=excluded.kind, book_id=excluded.book_id,
            chapter_uid=excluded.chapter_uid, chapter_title=excluded.chapter_title,
            text=excluded.text, abstract_text=excluded.abstract_text, range_str=excluded.range_str,
            color_style=excluded.color_style,
            deleted=CASE WHEN cards.hidden_by_user=1 THEN 1 ELSE 0 END,
+           created_at=excluded.created_at,
            updated_at=excluded.updated_at",
         rusqlite::params![
             c.kind, c.book_row_id, c.remote_id, c.chapter_uid, c.chapter_title,
-            c.text, c.abstract_text, c.range_str, c.color_style, c.created_at.max(now.saturating_sub(1))
+            c.text, c.abstract_text, c.range_str, c.color_style, created_at, now
         ],
     )?;
     let row_id = match existed {
@@ -842,6 +860,10 @@ pub fn load_review_state(conn: &Connection, card_id: i64) -> DbResult<Option<cra
 
 /// 回顾批次大小在 sync_meta 中的键。合法值 10/20/30，默认 20（R3）。
 pub const KEY_REVIEW_BATCH: &str = "review_batch_size";
+
+/// 一次性修复标记：旧版把同步卡的 created_at 钳成了同步时刻。
+/// 本键缺失时，sync 在拉取前清空全部基线强制全量重拉一次，跑完后写入本键。
+pub const KEY_CREATED_AT_REPAIR: &str = "created_at_repair_v1";
 pub const REVIEW_BATCH_OPTIONS: [i64; 3] = [10, 20, 30];
 pub const DEFAULT_REVIEW_BATCH: i64 = 20;
 

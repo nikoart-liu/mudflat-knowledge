@@ -113,7 +113,7 @@
       "kind": "custom",
       "refersTo": "toast",
       "description": "底部居中的墨色回执条。",
-      "html": "<div style=\"position:relative; height:64px;\"><div class=\"ds-toast\">已保存到钥匙串</div></div>",
+      "html": "<div style=\"position:relative; height:64px;\"><div class=\"ds-toast\">已保存到本机</div></div>",
       "css": ".ds-toast { position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; background: #23201c; color: #f8f5f1; padding: 9px 16px; font-size: 12px; border-radius: 2px; max-width: 70vw; }"
     }
   ],

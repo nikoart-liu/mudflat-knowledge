@@ -6,7 +6,7 @@ colors:
   panel: "#f5f4f0"
   selection: "#e9e7e2"
   ink: "#1c1917"
-  ink-muted: "#71717a"
+  ink-muted: "#6b6b74"
   ink-muted-deep: "#5f5f66"
   editorial-line: "#27272a"
   hairline: "#d4d4d8"
@@ -28,6 +28,15 @@ typography:
     fontSize: "30px"
     fontWeight: 700
     lineHeight: 1.1
+  settings-title:
+    fontFamily: '"Iowan Old Style", "Palatino", "Songti SC", "STSong", "Noto Serif SC", "SimSun", serif'
+    fontSize: "28px"
+    fontWeight: 700
+  review-title:
+    fontFamily: '"Iowan Old Style", "Palatino", "Songti SC", "STSong", "Noto Serif SC", "SimSun", serif'
+    fontSize: "22px"
+    fontWeight: 700
+    letterSpacing: "0.3em"
   group-label:
     fontFamily: '"Iowan Old Style", "Palatino", "Songti SC", "STSong", "Noto Serif SC", "SimSun", serif'
     fontSize: "18px"
@@ -39,6 +48,10 @@ typography:
     fontWeight: 700
     lineHeight: 1.6
     textDecoration: "underline 2px hairline, offset 5px"
+  key-input:
+    fontFamily: '"Iowan Old Style", "Palatino", "Songti SC", "STSong", "Noto Serif SC", "SimSun", serif'
+    fontSize: "15px"
+    fontWeight: 400
   reading:
     fontFamily: "-apple-system, PingFang SC, Hiragino Sans GB, system-ui, sans-serif"
     fontSize: "19px"
@@ -49,6 +62,18 @@ typography:
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.7
+  ui:
+    fontFamily: "-apple-system, PingFang SC, Hiragino Sans GB, system-ui, sans-serif"
+    fontSize: "13px"
+    fontWeight: 400
+  interface:
+    fontFamily: "-apple-system, PingFang SC, Hiragino Sans GB, system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+  small:
+    fontFamily: "-apple-system, PingFang SC, Hiragino Sans GB, system-ui, sans-serif"
+    fontSize: "11px"
+    fontWeight: 400
   eyebrow:
     fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace'
     fontSize: "9px"
@@ -80,10 +105,11 @@ typography:
 4. **直角即纸边**：全系统 border-radius: 0。纸边就是裁切的边。
 5. **金是点睛**：`--ember #b45309` 只允许出现在——内容头眉标「当前刊物」、星标卡 3px 书脊线、到期徽标实底、进度条当前段、focus ring、删除 hover。单屏金色合计 ≤ 视觉面积 5%。
 6. **页码感元数据**：日期、计数、章节一律 mono tabular；卡片页脚是「来源（左）+ 日期（右）」的页码行，压在栏线之下。
+7. **中文排印细节**：prose 面（卡片正文、批注、清样正文、引文、空态正文）启用 `text-spacing-trim: trim-start`（行首开引号半角，中文出版物惯例）与 `hanging-punctuation: first allow-end`（行尾标点悬挂），均为渐进增强；居中且加字距的衬线文字（清样标题/范围行/编目眉标）必须用等值 `padding-left` 补偿尾随字距，否则视觉中心偏左。
 
 ## 2. 色彩
 - 三阶纸面：`--paper #fdfcfb`（主表面）/ `--panel #f5f4f0`（侧栏、次级、进度条槽）/ `--selection #e9e7e2`（hover / 选中 / code）。
-- 墨阶：`--ink #1c1917` 正文 / `--ink-muted #71717a` 辅助 / selection 底上用 `--ink-muted-deep #5f5f66` 保 AA。
+- 墨阶：`--ink #1c1917` 正文 / `--ink-muted #6b6b74` 辅助（paper 5.1:1、panel 4.8:1，双面过 AA）/ selection 底上用 `--ink-muted-deep #5f5f66` 保 AA。
 - 身份底：自建卡 `--self-wash #f0f4f8`（蓝灰杂志插页）+ `--self-line #cbd5e1` 边。
 - 语义色仅两处：破坏性 `--grade-again #b3372e`（确认按钮、标签删除 hover）；成功反馈 `--grade-good #3b7a4e`。
 - 没有暗色变体；没有纯黑 #000 / 纯白 #fff 大面积（封面版框内衬允许 #fff）。
