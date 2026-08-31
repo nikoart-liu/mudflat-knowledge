@@ -34,6 +34,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+创建 Release 需要仓库允许 GitHub Actions 写入：Settings → Actions → General → Workflow permissions → Read and write permissions。若未开启，安装包仍会作为 workflow artifacts 保留，但不会出现在 GitHub Releases。
+
 macOS 包使用 ad-hoc 签名但未经过 Apple 公证，Windows 包也未使用商业代码签名证书；首次安装时系统可能显示安全提示。正式对外分发前，应在仓库 Secrets 中配置对应平台的签名与公证凭据。
 
 ## 数据与目录

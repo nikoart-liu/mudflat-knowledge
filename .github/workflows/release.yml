@@ -15,6 +15,8 @@ concurrency:
 jobs:
   build-and-publish:
     name: ${{ matrix.name }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +39,9 @@ jobs:
             args: ""
 
     runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out repository
@@ -79,7 +84,7 @@ jobs:
         run: node .github/scripts/verify-release-version.mjs
 
       - name: Build installers and publish release
-        uses: tauri-apps/tauri-action@v0.6.2
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -88,5 +93,7 @@ jobs:
           releaseBody: 自动构建的 macOS、Windows 与 Linux 安装包。
           releaseDraft: false
           prerelease: false
+          uploadUpdaterJson: false
+          uploadWorkflowArtifacts: true
           releaseAssetNamePattern: mudflat-knowledge_[version]_[platform]_[arch][setup][ext]
           args: ${{ matrix.args }}
