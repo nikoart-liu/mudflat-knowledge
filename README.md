@@ -1,8 +1,8 @@
-# 滩涂拾遗（Tideline Gleanings）
+# 滩涂拾遗
 
 桌面端「卡片笔记」应用：把你在**微信读书**里的划线与想法变成一张张卡片，支持浏览、全文搜索、星标与标签、基于间隔重复（SM-2 简化版）的每日回顾抽卡，并可直接给划线补写想法或新建独立卡片。
 
-技术栈：Tauri 2 + React 18 + TypeScript + Vite；后端 Rust（rusqlite + reqwest）。纯本地 SQLite 存储，无账号、无云同步；API Key 存本地数据目录下的 Key 文件（不依赖 macOS 钥匙串）。
+技术栈：Tauri 2 + React 18 + TypeScript + Vite；后端 Rust（rusqlite + reqwest）。纯本地 SQLite 存储，无账号、无云同步；API Key 存本地数据目录下的 Key 文件。
 
 ## 获取微信读书 API Key
 
@@ -13,7 +13,7 @@
 
 ## 开发
 
-前置：Node ≥ 20、Rust stable、Xcode Command Line Tools（macOS）。
+前置：Node ≥ 20、Rust stable。
 
 ```bash
 npm install
