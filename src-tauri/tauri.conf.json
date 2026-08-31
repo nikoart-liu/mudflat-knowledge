@@ -25,7 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["app", "dmg", "nsis", "appimage", "deb", "rpm"],
     "macOS": {
       "signingIdentity": "-"
     },
