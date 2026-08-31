@@ -150,7 +150,7 @@ fn demo_flow_query_search_persist_review() {
 
     // ---- 复习队列与评分：Again → 10 分钟后到期 ----
     let now = 1_800_000_000i64;
-    let due_before = db::due_cards(&conn, now, 30).unwrap();
+    let due_before = db::due_cards(&conn, now, 30, None).unwrap();
     assert_eq!(due_before.len(), 9); // 全部新卡默认当期进入队列（自建卡已硬删）
 
     let st = db::load_review_state(&conn, due_before[0].id).unwrap().unwrap_or_default();
@@ -159,7 +159,7 @@ fn demo_flow_query_search_persist_review() {
     let reloaded = db::load_review_state(&conn, due_before[0].id).unwrap().unwrap();
     assert_eq!(reloaded.due_at - reloaded.interval_days as i64 * 86400, now + 600);
 
-    let due_after = db::due_cards(&conn, now, 30).unwrap();
+    let due_after = db::due_cards(&conn, now, 30, None).unwrap();
     assert_eq!(due_after.len(), 8, "Again 的卡 10 分钟内不再出现在当前队列");
 
     // ---- reconcile：第二次同步少了一条时按远端删除软删、用户编辑保留 ----
@@ -267,7 +267,7 @@ fn excluded_restore_puts_card_due_immediately() {
     let now = 1_900_000_000i64;
 
     db::set_excluded_from_review(&conn, cards[0].id, true, now).unwrap();
-    assert_eq!(db::due_count(&conn, now).unwrap(), 1, "移出后到期数减 1");
+    assert_eq!(db::due_count(&conn, now, None).unwrap(), 1, "移出后到期数减 1");
     // 排除状态不影响墙与搜索
     assert_eq!(db::query_cards(&conn, &CardFilter::default(), 10, 0).unwrap().len(), 2);
     assert_eq!(db::search_cards(&conn, "第一条", &CardFilter::default(), 10).unwrap().len(), 1);
@@ -276,7 +276,7 @@ fn excluded_restore_puts_card_due_immediately() {
     db::set_excluded_from_review(&conn, cards[0].id, false, now + 100).unwrap();
     let st = db::load_review_state(&conn, cards[0].id).unwrap().unwrap();
     assert_eq!(st.due_at, now + 100, "恢复后 due_at=now，立即进入待回顾");
-    assert_eq!(db::due_count(&conn, now + 100).unwrap(), 2);
+    assert_eq!(db::due_count(&conn, now + 100, None).unwrap(), 2);
 }
 
 #[test]

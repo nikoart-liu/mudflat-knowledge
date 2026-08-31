@@ -18,7 +18,35 @@ import {
 import './App.css';
 
 type CardsView = { name: 'cards'; bookId: number | null };
-type View = CardsView | { name: 'review' } | { name: 'settings' };
+type View = CardsView | { name: 'review'; bookId: number | null } | { name: 'settings' };
+
+export type WallScope = 'book' | 'chapter';
+export type WallGroup = { key: string; label: string; mono: boolean; cards: CardRow[] };
+
+/// 卡片墙分组（纯函数，供单测）。保持输入顺序（created_at DESC）：
+/// - scope='book'：总索引按书分组，衬线书名做分隔行；
+/// - scope='chapter'：书内按章节分组——用户进了一本书，心里装的是这本书的结构，
+///   而不是日历月份；chapterUid 缺失时归入「未分章」。
+export function buildWallGroups(cards: CardRow[], scope: WallScope): WallGroup[] {
+  const map = new Map<string, WallGroup>();
+  for (const c of cards) {
+    let key: string, label: string, mono = false;
+    if (scope === 'book') {
+      key = c.bookTitle || 'self';
+      label = c.bookTitle || '自建卡';
+    } else {
+      // 以裁切后的章名为准：有章名按 uid 分组；章名空白（哪怕有 uid）归「未分章」，
+      // 因为对用户可辨的只有章名，uid 单独成组只会多出一行无名的分隔线。
+      const t = c.chapterTitle?.trim();
+      key = t ? `c-${c.chapterUid ?? t}` : 'no-chapter';
+      label = t || '未分章';
+    }
+    let g = map.get(key);
+    if (!g) { g = { key, label, mono, cards: [] }; map.set(key, g); }
+    g.cards.push(c);
+  }
+  return [...map.values()];
+}
 
 const PAGE = 500;
 const SEARCH_CAP = 200;
@@ -54,6 +82,7 @@ const RATING_DEFS: { key: ReviewRating; num: number; label: string }[] = [
 
 const REVIEW_BATCH_OPTIONS = [10, 20, 30];
 const EXCLUDE_HINT_KEY = 'mudflat.exclude-hint-seen';
+const READING_MODE_KEY = 'mudflat.reading-mode';
 
 function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
@@ -121,10 +150,20 @@ export default function App() {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [dueCount, setDueCount] = useState(0);
+  // 本书清样入口：书内到期数（随全局 dueCount 变化重查，覆盖同步后/回顾归来）
+  const [bookDue, setBookDue] = useState(0);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   // P1.3 搜索继承上下文：默认只在当前书/标签/星标范围内搜，可一键扩到全部卡片
   const [searchAll, setSearchAll] = useState(false);
+  // 长读模式：单栏通读，为「重读一本书的笔记」服务（V 切换，本地记忆）
+  const [reading, setReading] = useState(() => {
+    try { return localStorage.getItem(READING_MODE_KEY) === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(READING_MODE_KEY, reading ? '1' : '0'); } catch { /* 本地存储不可用时忽略 */ }
+  }, [reading]);
   const contentHeaderRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [chH, setChH] = useState(76);
   const lastViewRef = useRef<Exclude<View, { name: 'settings' }>>({ name: 'cards', bookId: null });
@@ -230,6 +269,10 @@ export default function App() {
         e.preventDefault();
         searchRef.current?.focus();
       }
+      if (e.key === 'v' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && view.name === 'cards') {
+        e.preventDefault();
+        setReading((r) => !r);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -283,12 +326,20 @@ export default function App() {
     }
   };
 
+  // 墙的滚动位置是上一本书的阅读痕迹：换书/换索引时回到墙顶，否则会落在
+  // 半截内容上，误以为书只有这么几张卡。从回顾/设置回到同一面墙时不经此
+  // 函数，原位保留。
+  const scrollTopHome = () => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+  };
+
   const clearFilters = () => {
     setQuery('');
     setStarredOnly(false);
     setSelectedTagIds([]);
     setSearchAll(false);
     setView({ name: 'cards', bookId: null });
+    scrollTopHome();
   };
 
   const toggleSettings = () => {
@@ -296,14 +347,21 @@ export default function App() {
       setView(lastViewRef.current);
       return;
     }
-    lastViewRef.current = view.name === 'review' ? { name: 'review' } : { name: 'cards', bookId: view.bookId };
+    lastViewRef.current = view.name === 'review'
+      ? { name: 'review', bookId: view.bookId }
+      : { name: 'cards', bookId: view.bookId };
     setView({ name: 'settings' });
   };
 
   const goCards = (bookId: number | null) => {
     setQuery('');
     setSearchAll(false);
+    // 进书即净：书是用户此刻唯一的关注范围，上一本书/总索引留下的标签与星标
+    // 筛选不该跟着进来，否则「这本书怎么只有几张卡」是错误归因。
+    setSelectedTagIds([]);
+    setStarredOnly(false);
     setView({ name: 'cards', bookId });
+    scrollTopHome();
   };
 
   const activeBook = !searching && view.name === 'cards' && view.bookId
@@ -311,27 +369,28 @@ export default function App() {
     : null;
   const filtered = starredOnly || selectedTagIds.length > 0 || (view.name === 'cards' && view.bookId !== null);
 
+  const activeBookId = activeBook?.id ?? null;
+  useEffect(() => {
+    if (!activeBookId) { setBookDue(0); return; }
+    let alive = true;
+    call<number>('get_due_count', { bookId: activeBookId })
+      .then((n) => { if (alive) setBookDue(n); })
+      .catch(() => { if (alive) setBookDue(0); });
+    return () => { alive = false; };
+  }, [activeBookId, dueCount]);
+
   const wallGroups = useMemo(() => {
     if (view.name !== 'cards' || searching) return null;
-    const byBook = !view.bookId;
-    const map = new Map<string, { key: string; label: string; mono: boolean; cards: CardRow[] }>();
-    for (const c of cards) {
-      let key: string, label: string, mono = false;
-      if (byBook) {
-        key = c.bookTitle || 'self';
-        label = c.bookTitle || '自建卡';
-      } else {
-        const d = new Date(c.createdAt * 1000);
-        key = `${d.getFullYear()}-${d.getMonth()}`;
-        label = `${d.getFullYear()} · ${String(d.getMonth() + 1).padStart(2, '0')}`;
-        mono = true;
-      }
-      let g = map.get(key);
-      if (!g) { g = { key, label, mono, cards: [] }; map.set(key, g); }
-      g.cards.push(c);
-    }
-    return [...map.values()];
+    return buildWallGroups(cards, view.bookId ? 'chapter' : 'book');
   }, [cards, view, searching]);
+
+  // 书内章节数：只在当前墙已全部载入时展示，避免分页时给错数
+  const chapterCount = useMemo(() => {
+    if (!activeBook) return 0;
+    const s = new Set<number>();
+    for (const c of cards) if (c.chapterUid != null) s.add(c.chapterUid);
+    return s.size;
+  }, [activeBook, cards]);
 
   const countLabel = (() => {
     if (searching) {
@@ -344,13 +403,14 @@ export default function App() {
   })();
 
   const reviewing = view.name === 'review';
+  const readingActive = reading && view.name === 'cards' && !searching;
 
   return (
-    <div className={`app${reviewing ? ' is-review' : ''}`}>
+    <div className={`app${reviewing ? ' is-review' : ''}${readingActive ? ' is-reading' : ''}`}>
       <header className="topbar">
         <div className="logo">
-          <img className="mark" src="/logo-mark.svg" width={18} height={18} alt="" />
-          <span>泥滩知识</span>
+          <img className="mark" src="/logo-mark.svg" width={20} height={20} alt="" />
+          <span>滩涂拾遗</span>
         </div>
         <div className="search">
           <Icon name="search" size={13} />
@@ -390,7 +450,7 @@ export default function App() {
           <section className="side-group side-review">
             <button
               className={`side-item review-cta${dueCount > 0 ? ' due' : ''}${view.name === 'review' ? ' active' : ''}`}
-              onClick={() => setView({ name: 'review' })}
+              onClick={() => setView({ name: 'review', bookId: null })}
               title="翻牌"
               aria-current={view.name === 'review' ? 'true' : undefined}
             >
@@ -463,7 +523,7 @@ export default function App() {
           </section>
         </aside>
 
-        <main className="main">
+        <main className="main" ref={mainRef}>
           {view.name === 'cards' && (
             <>
               <div className="content-header" ref={contentHeaderRef}>
@@ -493,6 +553,18 @@ export default function App() {
                           <span className="author">{activeBook.author || '佚名'}</span>
                           <span className="chip">划线 {activeBook.noteCount}</span>
                           <span className="chip">想法 {activeBook.reviewCount}</span>
+                          {chapterCount > 0 && cards.length >= cardTotal && (
+                            <span className="chip">章节 {chapterCount}</span>
+                          )}
+                          {bookDue > 0 && (
+                            <button
+                              className="due-chip"
+                              onClick={() => setView({ name: 'review', bookId: activeBook.id })}
+                              title="只翻这本书的到期卡片"
+                            >
+                              翻牌 {bookDue}
+                            </button>
+                          )}
                           <span className="card-date">{countLabel}</span>
                         </div>
                       </div>
@@ -505,11 +577,23 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {!hideFab && (
-                  <button className="fab" title="新建卡片" aria-label="新建卡片" onClick={() => setCreating(true)}>
-                    <Icon name="plus" size={16} />
-                  </button>
-                )}
+                <div className="head-actions">
+                  {!searching && (
+                    <button
+                      className={`ghost view-toggle${readingActive ? ' active' : ''}`}
+                      onClick={() => setReading((r) => !r)}
+                      title={readingActive ? '切回版面墙（V）' : '长读 · 单栏通读（V）'}
+                      aria-pressed={readingActive}
+                    >
+                      {readingActive ? '版面' : '长读'}
+                    </button>
+                  )}
+                  {!hideFab && (
+                    <button className="fab" title="新建卡片" aria-label="新建卡片" onClick={() => setCreating(true)}>
+                      <Icon name="plus" size={16} />
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="wall" style={{ '--ch-h': `${chH}px` } as React.CSSProperties}>
                 {cards.length > 0 && (wallGroups
@@ -555,8 +639,9 @@ export default function App() {
           )}
           {view.name === 'review' && (
             <ReviewView
+              book={view.bookId != null ? books.find((b) => b.id === view.bookId) ?? null : null}
               onToast={showToast}
-              onExit={() => { refreshMeta(); setView({ name: 'cards', bookId: null }); }}
+              onExit={() => { refreshMeta(); setView({ name: 'cards', bookId: view.bookId }); }}
               hasKey={hasKey}
               hasBooks={hasBooks}
             />
@@ -713,7 +798,7 @@ function Card({ card, onEdit, onChanged, onToast }: {
   // 确认文案与真实数据行为一致（R4）：自建卡物理删除；同步卡写隐藏墓碑，同步也不会恢复
   const confirmCopy = isSelf
     ? { title: '永久删除', message: '永久删除这张自建卡？此操作不可撤销。', label: '永久删除' }
-    : { title: '隐藏卡片', message: '从泥滩知识中隐藏这张卡片？之后同步也不会恢复。', label: '隐藏卡片' };
+    : { title: '隐藏卡片', message: '从滩涂拾遗中隐藏这张卡片？之后同步也不会恢复。', label: '隐藏卡片' };
   return (
     <>
     <article className={`card kind-${card.kind}${card.starred ? ' starred' : ''}${expanded ? ' expanded' : ''}`}>
@@ -968,12 +1053,16 @@ function CreateModal({ onClose, onSaved, onToast }: {
 }
 
 // 具名导出供前端交互测试直接渲染（PRD 12.1）
-export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
+// book 非空 = 本书清样：队列、剩余数、文案都只围绕这一本书。
+export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
+  book?: { id: number; title: string } | null;
   onToast: (m: string) => void;
   onExit: () => void;
   hasKey: boolean;
   hasBooks: boolean;
 }) {
+  const bookId = book?.id ?? null;
+  const scopeLine = book ? <p className="review-scope mono">本书 · {book.title}</p> : null;
   const [phase, setPhase] = useState<'entry' | 'review' | 'settling'>('entry');
   const [entryReady, setEntryReady] = useState(false);
   const [dueTotal, setDueTotal] = useState(0);
@@ -995,11 +1084,11 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
   const ratedRef = useRef<Record<ReviewRating, number>>({ again: 0, hard: 0, good: 0, easy: 0 });
   const excludedRef = useRef(0);
 
-  // 进入页：今日到期总数 + 批次设置（R3.1/R3.2）
+  // 进入页：今日到期总数 + 批次设置（R3.1/R3.2）；本书清样时按书取数
   useEffect(() => {
     let alive = true;
     Promise.all([
-      call<number>('get_due_count').catch(() => 0),
+      call<number>('get_due_count', { bookId }).catch(() => 0),
       call<ReviewSettings>('get_review_settings').catch(() => ({ batchSize: 20 })),
     ]).then(([due, settings]) => {
       if (!alive) return;
@@ -1008,12 +1097,12 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
       setEntryReady(true);
     });
     return () => { alive = false; };
-  }, []);
+  }, [bookId]);
 
   const startBatch = async () => {
     // 取队列前重查真实到期数，作为「今日总剩余」的起点（R3.2）
-    const due = await call<number>('get_due_count').catch(() => dueTotal);
-    const cards = await call<CardRow[]>('get_due_cards', { limit: batchSize }).catch((e) => {
+    const due = await call<number>('get_due_count', { bookId }).catch(() => dueTotal);
+    const cards = await call<CardRow[]>('get_due_cards', { limit: batchSize, bookId }).catch((e) => {
       onToast(explainError(e));
       return null;
     });
@@ -1036,7 +1125,7 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
 
   const refreshDueTotal = async (): Promise<number> => {
     try {
-      const n = await call<number>('get_due_count');
+      const n = await call<number>('get_due_count', { bookId });
       setDueTotal(n);
       return n;
     } catch {
@@ -1048,7 +1137,7 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
   const settle = async () => {
     let remaining = todayLeft;
     try {
-      remaining = await call<number>('get_due_count');
+      remaining = await call<number>('get_due_count', { bookId });
       setDueTotal(remaining);
     } catch { /* 用本地估算兜底 */ }
     setSettling({ remaining, rated: { ...ratedRef.current }, excluded: excludedRef.current });
@@ -1142,7 +1231,7 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
       setEntryReady(true);
       return;
     }
-    const cards = await call<CardRow[]>('get_due_cards', { limit: batchSize }).catch((e) => {
+    const cards = await call<CardRow[]>('get_due_cards', { limit: batchSize, bookId }).catch((e) => {
       onToast(explainError(e));
       return null;
     });
@@ -1208,24 +1297,30 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
     return (
       <div className="review">
         <h2 className="review-title">清样 · 翻牌回顾</h2>
+        {scopeLine}
         {!entryReady ? (
           <p className="hint">载入队列…</p>
         ) : dueTotal <= 0 ? (
           <div className="deck-done">
-            <p className="review-text">当前没有到期卡片</p>
+            <p className="review-text">{book ? '这本书当前没有到期卡片' : '当前没有到期卡片'}</p>
             <p className="review-hint">
               {!hasKey
                 ? '先到设置填写 API Key，再同步。到期的卡片会排进这副牌。'
                 : !hasBooks
                   ? '同步之后，新卡片会自动进入队列。'
-                  : '新卡片会自动进入队列。间隔重复讲究少而勤。'}
+                  : book
+                    ? '其他书的到期卡片不受影响。新划线会自动进入这本书的队列。'
+                    : '新卡片会自动进入队列。间隔重复讲究少而勤。'}
             </p>
             <button className="primary" onClick={onExit}>返回卡片墙</button>
           </div>
         ) : (
           <div className="deck-done">
-            <p className="review-text">今日到期 {dueTotal} 张 · 本批 {batchNow} 张</p>
-            <p className="review-hint">每批 {batchSize} 张，完成一批再看今天还剩多少。设置里可改为 10 / 20 / 30。</p>
+            <p className="review-text">{book ? '本书' : '今日'}到期 {dueTotal} 张 · 本批 {batchNow} 张</p>
+            <p className="review-hint">
+              {book ? '只翻这一本书的到期卡片。' : ''}
+              每批 {batchSize} 张，完成一批再看今天还剩多少。设置里可改为 10 / 20 / 30。
+            </p>
             <div className="deck-done-actions">
               <button className="primary" onClick={() => void startBatch()}>开始翻牌（Enter）</button>
               <button className="ghost" onClick={onExit}>返回卡片墙</button>
@@ -1245,6 +1340,7 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
     return (
       <div className="review">
         <h2 className="review-title">清样 · 翻牌回顾</h2>
+        {scopeLine}
         <div className="deck-done">
           <p className="review-text">{allDone ? '今天翻完了' : `本批完成，今天还剩 ${settling.remaining} 张`}</p>
           <p className="review-hint">本批处理 {processed} 张（{dist}）</p>
@@ -1280,6 +1376,7 @@ export function ReviewView({ onToast, onExit, hasKey, hasBooks }: {
   return (
     <div className="review">
       <h2 className="review-title">清样 · 翻牌回顾</h2>
+      {scopeLine}
       <div className="review-top">
         <div className="review-remaining">
           <span className="hint-mono">本批剩余 · 今日剩余</span>

@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
-  <title id="title">滩涂拾遗标志</title>
-  <desc id="desc">三道潮痕与一枚被重新拾起的琥珀色卡片</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Concept D / selected: Gleaned Trace 拾痕 -->
   <path fill="#1c1917" d="M8 11h48v7H8zM12 28h14v7H12zM38 28h14v7H38z"/>
   <path fill="#b45309" d="M28 20h8v21h-8z"/>
   <path fill="#1c1917" d="M8 46c10 0 13-4 21-4 9 0 11 7 19 7 3 0 6-1 8-2v7c-3 1-6 2-10 2-10 0-12-7-18-7-7 0-10 4-20 4z"/>

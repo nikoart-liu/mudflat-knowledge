@@ -268,3 +268,36 @@ describe('ReviewView 移出回顾（R2）', () => {
     );
   });
 });
+
+describe('ReviewView 本书清样', () => {
+  it('到期查询与取卡都带 bookId，文案与范围行指向本书', async () => {
+    backend.dueCount = 2;
+    backend.queue = [card(1, '本书卡')];
+    const { container } = render(
+      <ReviewView book={{ id: 7, title: '置身事内' }} onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+    );
+
+    expect(await screen.findByText(/本书到期 2 张/)).toBeTruthy();
+    expect(callMock).toHaveBeenCalledWith('get_due_count', { bookId: 7 });
+
+    await startReview(container);
+    expect(callMock).toHaveBeenCalledWith('get_due_cards', { limit: 20, bookId: 7 });
+    expect(screen.getAllByText('本书 · 置身事内').length).toBeGreaterThan(0);
+
+    // 结算重查也按书范围
+    fireEvent.keyDown(window, { key: ' ' });
+    await screen.findByRole('group', { name: '记忆评分' });
+    fireEvent.keyDown(window, { key: '3' });
+    expect(await screen.findByText(/本批完成/)).toBeTruthy();
+    expect(callMock).toHaveBeenCalledWith('get_due_count', { bookId: 7 });
+  });
+
+  it('本书到期为 0：文案指向这本书而非全馆', async () => {
+    backend.dueCount = 0;
+    render(
+      <ReviewView book={{ id: 7, title: '置身事内' }} onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+    );
+    expect(await screen.findByText('这本书当前没有到期卡片')).toBeTruthy();
+    expect(screen.queryByText('当前没有到期卡片')).toBeNull();
+  });
+});

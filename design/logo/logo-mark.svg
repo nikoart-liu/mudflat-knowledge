@@ -1,13 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Mudflat Knowledge — Tide Card mark -->
-  <!-- 索引卡被潮线穿过：暖纸 #f8f5f1 · 墨 #23201c · 发丝 #a9a49c/#c7c4bc · 承诺金 #b57f12 -->
-  <rect width="512" height="512" fill="#f8f5f1"/>
-  <rect x="146" y="88" width="220" height="336" fill="#f8f5f1" stroke="#23201c" stroke-width="9"/>
-  <rect x="178" y="126" width="92" height="11" fill="#23201c"/>
-  <rect x="178" y="152" width="62" height="8" fill="#a9a49c"/>
-  <rect x="178" y="172" width="76" height="8" fill="#a9a49c"/>
-  <path transform="translate(320,142)" fill="#b57f12" d="M0,-28 L6.47,-8.90 L26.63,-8.65 L10.46,3.40 L16.46,22.65 L0,11 L-16.46,22.65 L-10.46,3.40 L-26.63,-8.65 L-6.47,-8.90 Z"/>
-  <path d="M 146 316 Q 173.5 300 201 316 T 256 316 T 311 316 T 366 316" fill="none" stroke="#23201c" stroke-width="9"/>
-  <path d="M 146 352 Q 173.5 336 201 352 T 256 352 T 311 352 T 366 352" fill="none" stroke="#a9a49c" stroke-width="9"/>
-  <path d="M 146 388 Q 173.5 372 201 388 T 256 388 T 311 388 T 366 388" fill="none" stroke="#c7c4bc" stroke-width="9"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">滩涂拾遗标志</title>
+  <desc id="desc">三道潮痕与一枚被重新拾起的琥珀色卡片</desc>
+  <!--
+    Gleaned Trace / 拾痕
+    三道墨线同时是退潮留下的沉积层、刊物正文行与卡片墙；
+    琥珀色竖片是从旧划线中重新拾起的一条记忆。
+  -->
+  <path fill="#1c1917" d="M8 11h48v7H8zM12 28h14v7H12zM38 28h14v7H38z"/>
+  <path fill="#b45309" d="M28 20h8v21h-8z"/>
+  <path fill="#1c1917" d="M8 46c10 0 13-4 21-4 9 0 11 7 19 7 3 0 6-1 8-2v7c-3 1-6 2-10 2-10 0-12-7-18-7-7 0-10 4-20 4z"/>
 </svg>

@@ -1,4 +1,4 @@
-/* Mudflat Knowledge — 泥滩知识 v2「刊物排印」(The Literary Gazette)
+/* 滩涂拾遗（Tideline Gleanings） v2「刊物排印」(The Literary Gazette)
    视觉语言：中文文学刊物内页。宋体刊头与衬线标题 × 黑体正文 × mono 页码元数据。
    结构由栏线与墨线承担：2px 墨线定刊头，1px 栏线定栏目；金（琥珀 #b45309）只在
    眉标、星标、当前进度处点睛。无阴影、无渐变、无圆角（纸边即纸边）。
@@ -271,7 +271,21 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   font-family: var(--font-mono); font-size: 10px;
   background: var(--ink); color: var(--paper); padding: 3px 8px;
 }
+/* 本书清样入口：到期徽标实底金（与侧栏到期计数同一预算），点击直达本书回顾 */
+.due-chip {
+  margin: 0; border: none; border-radius: 0;
+  background: var(--ember); color: var(--paper);
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  font-variant-numeric: tabular-nums; padding: 3px 8px; line-height: 1.5;
+}
+.due-chip:hover:not(:disabled) { background: var(--ember-deep); }
 /* 新建钮：墨框方章，hover 反白 */
+.head-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+/* 长读切换：mono 小字钮，与检索范围切换同语系 */
+.view-toggle {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 400;
+  letter-spacing: 0.1em; padding: 6px 12px;
+}
 .fab {
   width: 40px; height: 40px; border-radius: 0; flex-shrink: 0;
   padding: 0; display: grid; place-items: center;
@@ -412,6 +426,36 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   padding: 8px 0 0;
   font-size: 11px; color: var(--ink-muted);
 }
+
+/* ---------- 长读模式：单栏通读，为「重读一本书的笔记」服务 ----------
+   版面墙负责扫与找（三栏、钳行、卡片框）；长读负责从头读到尾：
+   一栏 ≤720px、钳行解除、卡片框退场只留栏线，章名分隔行成为书脊。 */
+.app.is-reading .wall {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 720px;
+  margin: 0 auto;
+}
+.app.is-reading .wall-group-head { padding: 20px 0 12px; }
+.app.is-reading .card {
+  border: none; border-bottom: 1px solid var(--hairline);
+  background: transparent; padding: 28px 0 24px;
+}
+.app.is-reading .card:hover { border-bottom-color: var(--editorial-line); }
+.app.is-reading .card.kind-self {
+  background: transparent; border-color: transparent;
+  border-bottom-color: var(--self-line);
+}
+/* 长读里星标由实心星钮与金字眉标承担，书脊框线退场 */
+.app.is-reading .card.starred { border-left: none; }
+/* 通读不折叠：钳行解除 */
+.app.is-reading .card-text,
+.app.is-reading .card-note {
+  display: block; overflow: visible; -webkit-line-clamp: unset;
+}
+.app.is-reading .card-text { font-size: 16px; line-height: 1.9; }
+.app.is-reading .card.kind-thought .card-text { font-size: 18px; }
+.app.is-reading .card-note { line-height: 1.8; margin-top: 14px; }
+.app.is-reading .card-meta { margin-top: 20px; }
 .field-hint { margin: -4px 0 10px; font-size: 12px; }
 
 /* ---------- 弹层：社论抽版 ---------- */
@@ -466,6 +510,12 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .review-title {
   font-family: var(--font-display); font-size: 22px; font-weight: 700;
   letter-spacing: 0.3em; margin: 0 0 28px; text-align: center;
+}
+/* 本书清样的范围行：mono 弱化书名，压在标题与正文之间 */
+.review-scope {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted);
+  letter-spacing: 0.14em; margin: -18px 0 20px; text-align: center;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .review-top { width: 100%; display: flex; justify-content: space-between; align-items: flex-end; }
 .review-remaining { display: flex; flex-direction: column; gap: 2px; }

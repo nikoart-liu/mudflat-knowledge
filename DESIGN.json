@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "generatedAt": "2026-08-27T00:00:00+08:00",
-  "title": "Design System: Mudflat Knowledge",
+  "title": "Design System: 滩涂拾遗",
   "extensions": {
     "colorMeta": {
       "paper": { "role": "neutral", "displayName": "暖纸 Warm Paper", "canonical": "oklch(97.2% 0.006 85)", "tonalRamp": ["#0c0b0a", "#262522", "#44423e", "#63615c", "#85827c", "#a8a59e", "#ccc9c3", "#f0eeea"] },

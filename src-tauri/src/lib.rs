@@ -247,15 +247,15 @@ fn delete_tag(state: State<'_, Db>, tag_id: i64) -> Result<(), String> {
 // ---------- review (SRS) ----------
 
 #[tauri::command]
-fn get_due_cards(state: State<'_, Db>, limit: Option<i64>) -> Result<Vec<CardRow>, String> {
+fn get_due_cards(state: State<'_, Db>, limit: Option<i64>, book_id: Option<i64>) -> Result<Vec<CardRow>, String> {
     let conn = state.lock().map_err(|e| e.to_string())?;
-    db::due_cards(&conn, now_secs(), limit.unwrap_or(30)).map_err(db_err)
+    db::due_cards(&conn, now_secs(), limit.unwrap_or(30), book_id).map_err(db_err)
 }
 
 #[tauri::command]
-fn get_due_count(state: State<'_, Db>) -> Result<i64, String> {
+fn get_due_count(state: State<'_, Db>, book_id: Option<i64>) -> Result<i64, String> {
     let conn = state.lock().map_err(|e| e.to_string())?;
-    db::due_count(&conn, now_secs()).map_err(db_err)
+    db::due_count(&conn, now_secs(), book_id).map_err(db_err)
 }
 
 #[tauri::command]

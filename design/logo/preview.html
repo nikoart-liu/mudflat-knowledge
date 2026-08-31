@@ -1,104 +1,96 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>Mudflat Knowledge — Logo Concepts</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>滩涂拾遗 — 拾痕 Logo System</title>
 <style>
   :root {
-    --paper:#f8f5f1; --panel:#efece7; --selection:#ebe7e0;
-    --hairline:#c7c4bc; --hairline-strong:#a9a49c;
-    --ink:#23201c; --ink-strong:#13110e; --ink-muted:#6d6860;
-    --amber:#b57f12; --amber-wash:#f8f0db;
+    --paper:#fdfcfb; --panel:#f5f4f0; --selection:#e9e7e2;
+    --hairline:#d4d4d8; --ink:#1c1917; --muted:#71717a; --ember:#b45309;
+    --serif:"Iowan Old Style", Palatino, "Songti SC", STSong, serif;
+    --sans:-apple-system, "PingFang SC", system-ui, sans-serif;
+    --mono:ui-monospace, "SF Mono", Menlo, monospace;
   }
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body {
-    background:#262522; color:var(--ink);
-    font-family:-apple-system, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
-    padding:48px; display:flex; flex-direction:column; gap:40px; align-items:center;
+  * { box-sizing:border-box; }
+  body { margin:0; background:#242321; color:var(--ink); font-family:var(--sans); padding:56px 24px; }
+  main { width:min(1040px, 100%); margin:auto; background:var(--paper); border-top:8px solid var(--ink); }
+  header { padding:52px 56px 42px; border-bottom:2px solid var(--ink); display:grid; grid-template-columns:1fr 300px; gap:56px; }
+  .eyebrow, .label { font:700 10px/1.4 var(--mono); letter-spacing:.18em; color:var(--ember); }
+  h1 { margin:14px 0 18px; font:700 48px/1.05 var(--serif); letter-spacing:-.02em; }
+  .lede { margin:0; max-width:34em; font-size:16px; line-height:1.8; }
+  .hero-mark { width:260px; aspect-ratio:1; display:grid; place-items:center; background:var(--panel); border:1px solid var(--hairline); }
+  .hero-mark img { width:188px; height:188px; }
+  section { padding:40px 56px; border-bottom:1px solid var(--hairline); }
+  h2 { margin:10px 0 28px; font:700 28px/1.2 var(--serif); }
+  .story { display:grid; grid-template-columns:repeat(3,1fr); border:1px solid var(--hairline); }
+  .story article { padding:24px; min-height:168px; }
+  .story article + article { border-left:1px solid var(--hairline); }
+  .story b { display:block; font:700 56px/1 var(--serif); margin-bottom:16px; }
+  .story p { margin:0; color:var(--muted); font-size:13px; line-height:1.7; }
+  .lockups { display:grid; grid-template-columns:1.3fr 1fr; gap:24px; }
+  .sample { min-height:220px; border:1px solid var(--hairline); display:grid; place-items:center; padding:24px; }
+  .sample.dark { background:var(--ink); }
+  .sample img.lockup { width:100%; height:auto; }
+  .masthead { display:flex; align-items:center; gap:10px; font:700 22px var(--serif); color:var(--paper); }
+  .masthead img { width:24px; height:24px; filter:none; }
+  .sizes { display:flex; align-items:flex-end; gap:34px; padding:28px 0 8px; }
+  figure { margin:0; display:grid; justify-items:center; gap:10px; }
+  figcaption { font:10px var(--mono); color:var(--muted); }
+  .app-tile { width:180px; height:180px; }
+  footer { display:flex; justify-content:space-between; padding:22px 56px; font:10px var(--mono); color:var(--muted); }
+  @media (max-width:760px) {
+    header { grid-template-columns:1fr; padding:36px 28px; }
+    .hero-mark { width:100%; }
+    section { padding:32px 28px; }
+    .story, .lockups { grid-template-columns:1fr; }
+    .story article + article { border-left:0; border-top:1px solid var(--hairline); }
   }
-  .board { background:var(--paper); border:1px solid var(--hairline-strong); padding:40px 48px; }
-  .label { font-size:10px; font-weight:700; letter-spacing:0.12em; color:var(--ink-muted); text-transform:uppercase; margin-bottom:20px; }
-  .row { display:flex; align-items:center; gap:36px; }
-  .divider { border-top:1px solid var(--hairline); margin:32px 0; }
-  /* wordmark */
-  .wordmark { display:flex; flex-direction:column; }
-  .wordmark .l1 { font-weight:800; font-size:30px; letter-spacing:0.02em; color:var(--ink-strong); line-height:1.05; }
-  .wordmark .l2 { font-weight:700; font-size:12.5px; letter-spacing:0.42em; color:var(--ink-muted); margin-top:6px; }
-  .wordmark.amber .l2 { color:var(--amber); }
-  .lockup { display:flex; align-items:center; gap:16px; }
-  .lockup img { display:block; }
-  .sizes { display:flex; align-items:flex-end; gap:24px; }
-  .sizes figure { display:flex; flex-direction:column; align-items:center; gap:8px; }
-  .sizes figcaption { font-size:10px; letter-spacing:0.1em; color:var(--ink-muted); font-family:ui-monospace, "SF Mono", Menlo, monospace; }
 </style>
 </head>
 <body>
-
-  <div class="board" style="width:920px;">
-    <div class="label">Concept A — Tide Card 潮线卡</div>
-    <div class="row">
-      <img src="concept-a-tidecard.svg" width="128" height="128">
-      <div class="lockup">
-        <img src="concept-a-tidecard.svg" width="56" height="56">
-        <div class="wordmark"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
-      </div>
-      <div class="lockup">
-        <img src="concept-a-tidecard.svg" width="40" height="40">
-        <div class="wordmark" style="transform:scale(.72); transform-origin:left center;"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
-      </div>
+<main>
+  <header>
+    <div>
+      <div class="eyebrow">SELECTED IDENTITY · 01</div>
+      <h1>拾痕</h1>
+      <p class="lede">不是“装知识的卡片”，而是退潮后重新显露的一条痕迹。标志把潮滩沉积层、刊物正文行与每日回顾中的一枚卡片压缩为一个可在 16px 清晰辨认的符号。</p>
     </div>
-    <div class="divider"></div>
-    <div class="label">Icon sizes — 64 / 32 / 16</div>
+    <div class="hero-mark"><img src="logo-mark.svg" alt="滩涂拾遗拾痕标志"></div>
+  </header>
+
+  <section>
+    <div class="label">SEMANTIC CONSTRUCTION</div>
+    <h2>三层语义，一个形状</h2>
+    <div class="story">
+      <article><b>一</b><p>三道墨痕是退潮后留下的层理，也像一本刊物里沉静排列的正文行。</p></article>
+      <article><b style="color:var(--ember)">丨</b><p>琥珀竖片是被拾起的旧划线：唯一的强调色只承担“当前值得重遇”的语义。</p></article>
+      <article><b>⌁</b><p>底线保留一次克制的折返，像潮线、书脊，也像记忆重新连接时留下的痕迹。</p></article>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">LOCKUPS</div>
+    <h2>刊物气质，不做工具图标</h2>
+    <div class="lockups">
+      <div class="sample"><img class="lockup" src="logo-lockup.svg" alt="滩涂拾遗组合标志"></div>
+      <div class="sample dark"><div class="masthead"><img src="logo-mark.svg" alt=""><span>滩涂拾遗</span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">OPTICAL SIZES</div>
+    <h2>从应用图标到刊头小标</h2>
     <div class="sizes">
-      <figure><img src="concept-a-tidecard.svg" width="64" height="64"><figcaption>64</figcaption></figure>
-      <figure><img src="concept-a-tidecard.svg" width="32" height="32"><figcaption>32</figcaption></figure>
-      <figure><img src="concept-a-tidecard.svg" width="16" height="16"><figcaption>16</figcaption></figure>
+      <figure><img class="app-tile" src="app-icon.svg" alt="应用图标"><figcaption>APP ICON</figcaption></figure>
+      <figure><img src="logo-mark.svg" width="64" height="64" alt=""><figcaption>64 PX</figcaption></figure>
+      <figure><img src="logo-mark.svg" width="32" height="32" alt=""><figcaption>32 PX</figcaption></figure>
+      <figure><img src="logo-mark.svg" width="20" height="20" alt=""><figcaption>20 PX</figcaption></figure>
+      <figure><img src="logo-mark.svg" width="16" height="16" alt=""><figcaption>16 PX</figcaption></figure>
     </div>
-  </div>
+  </section>
 
-  <div class="board" style="width:920px;">
-    <div class="label">Concept B — Strata 沉积层</div>
-    <div class="row">
-      <img src="concept-b-strata.svg" width="128" height="128">
-      <div class="lockup">
-        <img src="concept-b-strata.svg" width="56" height="56">
-        <div class="wordmark"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
-      </div>
-      <div class="lockup">
-        <img src="concept-b-strata.svg" width="40" height="40">
-        <div class="wordmark" style="transform:scale(.72); transform-origin:left center;"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
-      </div>
-    </div>
-    <div class="divider"></div>
-    <div class="label">Icon sizes — 64 / 32 / 16</div>
-    <div class="sizes">
-      <figure><img src="concept-b-strata.svg" width="64" height="64"><figcaption>64</figcaption></figure>
-      <figure><img src="concept-b-strata.svg" width="32" height="32"><figcaption>32</figcaption></figure>
-      <figure><img src="concept-b-strata.svg" width="16" height="16"><figcaption>16</figcaption></figure>
-    </div>
-  </div>
-
-  <div class="board" style="width:920px;">
-    <div class="label">Concept C — Track 鸟迹</div>
-    <div class="row">
-      <img src="concept-c-track.svg" width="128" height="128">
-      <div class="lockup">
-        <img src="concept-c-track.svg" width="56" height="56">
-        <div class="wordmark"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
-      </div>
-      <div class="lockup">
-        <img src="concept-c-track.svg" width="40" height="40">
-        <div class="wordmark" style="transform:scale(.72); transform-origin:left center;"><span class="l1">MUDFLAT</span><span class="l2">KNOWLEDGE</span></div>
-      </div>
-    </div>
-    <div class="divider"></div>
-    <div class="label">Icon sizes — 64 / 32 / 16</div>
-    <div class="sizes">
-      <figure><img src="concept-c-track.svg" width="64" height="64"><figcaption>64</figcaption></figure>
-      <figure><img src="concept-c-track.svg" width="32" height="32"><figcaption>32</figcaption></figure>
-      <figure><img src="concept-c-track.svg" width="16" height="16"><figcaption>16</figcaption></figure>
-    </div>
-  </div>
-
+  <footer><span>滩涂拾遗 / TIDELINE GLEANINGS</span><span>PAPER · INK · EMBER</span></footer>
+</main>
 </body>
 </html>

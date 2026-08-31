@@ -1,7 +1,7 @@
 [package]
 name = "mudflat-knowledge"
 version = "0.1.0"
-description = "Mudflat Knowledge — WeRead card notes"
+description = "滩涂拾遗 — WeRead card notes"
 authors = ["you"]
 edition = "2021"
 

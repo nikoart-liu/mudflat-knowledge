@@ -775,26 +775,33 @@ pub fn ensure_review_row(conn: &Connection, card_id: i64, due_now: i64) -> DbRes
     Ok(())
 }
 
-pub fn due_cards(conn: &Connection, now: i64, limit: i64) -> DbResult<Vec<CardRow>> {
+/// 到期卡片。book_id 传入时只取该书（本书清样）；None 为整馆。
+pub fn due_cards(conn: &Connection, now: i64, limit: i64, book_id: Option<i64>) -> DbResult<Vec<CardRow>> {
+    // book_id 是服务端 i64，走 format! 与既有 {now}/{limit} 同一约束
+    let scope = book_id.map(|id| format!(" AND c.book_id={id}")).unwrap_or_default();
     let sql = format!(
         "SELECT {}, COALESCE(b.title,'') FROM cards c \
          LEFT JOIN books b ON c.book_id=b.id \
          JOIN review_state rs ON rs.card_id=c.id \
          WHERE c.deleted=0 AND c.excluded_from_review=0 AND rs.due_at<={now} \
-         AND (b.id IS NULL OR b.sync_reviews<>0) \
+         AND (b.id IS NULL OR b.sync_reviews<>0){scope} \
          ORDER BY rs.due_at LIMIT {limit}",
         CARD_SELECT_COLS
     );
     collect_cards(conn, &sql, &[])
 }
 
-pub fn due_count(conn: &Connection, now: i64) -> DbResult<i64> {
+/// 到期计数。book_id 传入时只数该书；None 为整馆。
+pub fn due_count(conn: &Connection, now: i64, book_id: Option<i64>) -> DbResult<i64> {
+    let scope = book_id.map(|id| format!(" AND c.book_id={id}")).unwrap_or_default();
     conn.query_row(
-        "SELECT COUNT(*) FROM cards c \
-         LEFT JOIN books b ON c.book_id=b.id \
-         JOIN review_state rs ON rs.card_id=c.id \
-         WHERE c.deleted=0 AND c.excluded_from_review=0 AND rs.due_at<=?1 \
-         AND (b.id IS NULL OR b.sync_reviews<>0)",
+        &format!(
+            "SELECT COUNT(*) FROM cards c \
+             LEFT JOIN books b ON c.book_id=b.id \
+             JOIN review_state rs ON rs.card_id=c.id \
+             WHERE c.deleted=0 AND c.excluded_from_review=0 AND rs.due_at<=?1 \
+             AND (b.id IS NULL OR b.sync_reviews<>0){scope}"
+        ),
         [now],
         |r| r.get(0),
     )
@@ -854,4 +861,100 @@ pub fn set_sync_meta(conn: &Connection, key: &str, value: &str) -> DbResult<()> 
         rusqlite::params![key, value],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: i64 = 1_700_000_000;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        apply_schema(&conn, SchemaPlan::Fresh).unwrap();
+        conn
+    }
+
+    fn book(conn: &Connection, wid: &str, sync_reviews: bool) -> i64 {
+        upsert_book(
+            conn,
+            &NewBook {
+                weread_book_id: wid.into(),
+                title: wid.into(),
+                author: String::new(),
+                cover: String::new(),
+                reading_progress: 0,
+                note_count: 3,
+                review_count: 1,
+            },
+        )
+        .unwrap();
+        let id = find_book_row(conn, wid).unwrap().unwrap();
+        set_book_sync_reviews(conn, id, sync_reviews).unwrap();
+        id
+    }
+
+    /// 插入一张同步卡并把到期时间拨到 now + due_in
+    fn card(conn: &Connection, book_row_id: i64, remote: &str, due_in: i64) -> i64 {
+        let (id, _) = upsert_card(
+            conn,
+            &UpsertCard {
+                kind: "highlight",
+                book_row_id,
+                remote_id: remote,
+                chapter_uid: None,
+                chapter_title: None,
+                text: remote,
+                abstract_text: None,
+                range_str: None,
+                color_style: 0,
+                created_at: NOW,
+            },
+            NOW,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE review_state SET due_at=?2 WHERE card_id=?1",
+            rusqlite::params![id, NOW + due_in],
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn due_scope_filters_by_book() {
+        let conn = mem();
+        let b1 = book(&conn, "b1", true);
+        let b2 = book(&conn, "b2", true);
+        card(&conn, b1, "r-1", 0);
+        card(&conn, b1, "r-2", 0);
+        card(&conn, b2, "r-3", 0);
+        card(&conn, b2, "r-4", 3600); // 未到期，两边都不该出现
+
+        assert_eq!(due_count(&conn, NOW, None).unwrap(), 3);
+        assert_eq!(due_count(&conn, NOW, Some(b1)).unwrap(), 2);
+        assert_eq!(due_count(&conn, NOW, Some(b2)).unwrap(), 1);
+
+        let rows = due_cards(&conn, NOW, 30, Some(b1)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|c| c.book_id == Some(b1)), "本书清样不得混入其他书");
+
+        let all = due_cards(&conn, NOW, 30, None).unwrap();
+        assert_eq!(all.len(), 3, "None 仍是整馆队列");
+    }
+
+    #[test]
+    fn due_scope_respects_sync_reviews_toggle() {
+        let conn = mem();
+        let off = book(&conn, "b-off", false);
+        let on = book(&conn, "b-on", true);
+        card(&conn, off, "r-off", 0);
+        card(&conn, on, "r-on", 0);
+
+        // 关掉回顾同步的书：无论整馆还是按书，到期队列都不可见
+        assert_eq!(due_count(&conn, NOW, None).unwrap(), 1);
+        assert_eq!(due_count(&conn, NOW, Some(off)).unwrap(), 0);
+        assert_eq!(due_count(&conn, NOW, Some(on)).unwrap(), 1);
+    }
 }
