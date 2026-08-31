@@ -25,6 +25,17 @@ npm run tauri build   # 打包
 cd src-tauri && cargo test   # 后端单元测试 + 数据层行为测试
 ```
 
+## 发布安装包
+
+GitHub Actions 会在推送 `v*` 版本标签时构建 macOS（Apple Silicon / Intel）、Windows x64 与 Linux x64 安装包，并自动创建 GitHub Release。标签版本必须与 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 中的版本一致：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+macOS 包使用 ad-hoc 签名但未经过 Apple 公证，Windows 包也未使用商业代码签名证书；首次安装时系统可能显示安全提示。正式对外分发前，应在仓库 Secrets 中配置对应平台的签名与公证凭据。
+
 ## 数据与目录
 
 - 数据库：`~/Library/Application Support/com.mudflat.knowledge/mudflat.db`（SQLite，WAL 模式，FTS5 trigram 中文子串搜索）
