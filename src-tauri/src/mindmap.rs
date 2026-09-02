@@ -361,7 +361,50 @@ pub fn parse_model_json(raw: &str) -> MindmapResult<Mindmap> {
     if v.get("stats").is_none() {
         v["stats"] = serde_json::json!({ "cards": 0, "chapters": 0, "themes": 0, "unplaced": 0 });
     }
+    let mut seq = 0u32;
+    if let Some(root) = v.get_mut("root") {
+        fill_node_defaults(root, "root", &mut seq, true);
+    }
     serde_json::from_value(v).map_err(|e| MindmapError::Msg(format!("脑图结构不对: {e}")))
+}
+
+fn fill_node_defaults(v: &mut serde_json::Value, fallback_id: &str, seq: &mut u32, is_root: bool) {
+    let Some(obj) = v.as_object_mut() else { return };
+    let id_ok = obj.get("id").and_then(|x| x.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if !id_ok {
+        obj.insert("id".into(), serde_json::json!(fallback_id));
+    }
+    if obj.get("kind").and_then(|x| x.as_str()).unwrap_or("").is_empty() {
+        obj.insert("kind".into(), serde_json::json!(if is_root { "book" } else { "theme" }));
+    }
+    if obj.get("label").and_then(|x| x.as_str()).unwrap_or("").trim().is_empty() {
+        let from_summary = obj.get("summary").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let label = if from_summary.is_empty() { "未命名主题" } else { from_summary };
+        obj.insert("label".into(), serde_json::json!(label));
+    }
+    // 模型常写 source_card_ids / cardIds / ids
+    if obj.get("sourceCardIds").is_none() {
+        let alt = obj
+            .get("source_card_ids")
+            .or_else(|| obj.get("cardIds"))
+            .or_else(|| obj.get("ids"))
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
+        obj.insert("sourceCardIds".into(), alt);
+    }
+    obj.remove("source_card_ids");
+    obj.remove("cardIds");
+    obj.remove("ids");
+    if obj.get("children").is_none() {
+        obj.insert("children".into(), serde_json::json!([]));
+    }
+    if let Some(children) = obj.get_mut("children").and_then(|c| c.as_array_mut()) {
+        for child in children {
+            *seq += 1;
+            let child_id = format!("t-{seq}");
+            fill_node_defaults(child, &child_id, seq, false);
+        }
+    }
 }
 
 fn cache_path(dir: &Path, book_id: i64) -> std::path::PathBuf {
@@ -685,6 +728,27 @@ mod tests {
         let raw = "```json\n{\"root\":{\"id\":\"root\",\"label\":\"书\",\"kind\":\"book\",\"children\":[]}}\n```";
         let m = parse_model_json(raw).unwrap();
         assert_eq!(m.root.kind, "book");
+    }
+
+    #[test]
+    fn parse_fills_missing_id_kind_and_source_ids() {
+        let raw = r#"{
+          "root": {
+            "label": "原子习惯 · 我的划线",
+            "children": [
+              { "label": "身份由重复塑造", "source_card_ids": [1, 2, 3] },
+              { "label": "环境在替你做决定", "ids": [8, 9, 10] }
+            ]
+          }
+        }"#;
+        let m = parse_model_json(raw).unwrap();
+        assert_eq!(m.root.id, "root");
+        assert_eq!(m.root.kind, "book");
+        assert_eq!(m.root.children.len(), 2);
+        assert!(!m.root.children[0].id.is_empty());
+        assert_eq!(m.root.children[0].kind, "theme");
+        assert_eq!(m.root.children[0].source_card_ids, vec![1, 2, 3]);
+        assert_eq!(m.root.children[1].source_card_ids, vec![8, 9, 10]);
     }
 
     #[test]
