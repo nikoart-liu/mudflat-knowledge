@@ -2,6 +2,7 @@ pub mod db;
 mod gateway;
 mod keystore;
 mod llm;
+mod mindmap;
 pub mod srs;
 mod sync;
 
@@ -428,6 +429,32 @@ fn get_review_settings(state: State<'_, Db>) -> Result<ReviewSettings, String> {
 }
 
 #[tauri::command]
+fn get_mindmap_status(app: tauri::AppHandle, state: State<'_, Db>, book_id: i64) -> Result<mindmap::MindmapStatus, String> {
+    let dir = data_dir(&app)?;
+    let cards = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        mindmap::load_book_cards(&conn, book_id)
+            .map_err(|_| "找不到这本书，或还没有卡片。".to_string())?
+            .1
+    };
+    let provider_off = llm::load_config(&dir)
+        .map(|c| c.provider == llm::Provider::Off)
+        .unwrap_or(true);
+    Ok(mindmap::status_for(&dir, book_id, &cards, provider_off))
+}
+
+#[tauri::command]
+async fn generate_mindmap(app: tauri::AppHandle, state: State<'_, Db>, book_id: i64) -> Result<mindmap::Mindmap, String> {
+    let dir = data_dir(&app)?;
+    let (book, cards) = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        mindmap::load_book_cards(&conn, book_id)
+            .map_err(|_| "找不到这本书，或还没有卡片。".to_string())?
+    };
+    mindmap::generate(&dir, &book, &cards).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn set_review_batch_size(state: State<'_, Db>, size: i64) -> Result<(), String> {
     if !db::REVIEW_BATCH_OPTIONS.contains(&size) {
         return Err("每批张数仅支持 10 / 20 / 30".into());
@@ -475,6 +502,8 @@ pub fn run() {
             get_due_count,
             get_review_settings,
             set_review_batch_size,
+            get_mindmap_status,
+            generate_mindmap,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

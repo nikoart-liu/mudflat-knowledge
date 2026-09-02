@@ -697,6 +697,37 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
 .app.is-review .sidebar { display: none; }
 .app.is-review .search,
 .app.is-review .top-sync { display: none; }
+.app.is-mindmap .sidebar { display: none; }
+.app.is-mindmap .search,
+.app.is-mindmap .top-sync { display: none; }
+
+.mindmap { max-width: 860px; margin: 0 auto; padding: 32px 32px 96px; }
+.mm-canvas { margin-top: 24px; }
+.mm-root {
+  font-family: var(--font-display); font-weight: 700; font-size: 22px;
+  letter-spacing: 0.12em; text-align: center; padding: 8px 0 20px;
+}
+.mm-level { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
+.mm-level > li { min-width: 200px; max-width: 280px; }
+.mm-sub { list-style: none; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid var(--hairline); display: flex; flex-direction: column; gap: 8px; }
+.mm-chip {
+  width: 100%; text-align: left; border: 1px solid var(--editorial-line);
+  background: var(--paper); color: var(--ink); border-radius: 0;
+  padding: 12px 14px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+}
+.mm-chip:hover:not(:disabled) { background: var(--selection); }
+.mm-chip.active { border-color: var(--ember); box-shadow: 0 0 0 1px var(--ember); }
+.mm-chip-label { font-family: var(--font-display); font-weight: 700; font-size: 16px; line-height: 1.4; }
+.mm-chip-count { font-size: 10px; color: var(--ink-muted); flex-shrink: 0; padding-top: 4px; }
+.mm-drawer { max-width: 520px; }
+.mm-evidence { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; margin-top: 12px; }
+.mm-ev-item {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  text-align: left; border: 1px solid var(--hairline); background: transparent;
+  padding: 10px 12px; width: 100%;
+}
+.mm-ev-item:hover:not(:disabled) { border-color: var(--ink); }
+.mm-ev-text { font-size: 14px; line-height: 1.6; }
 
 /* 版权页阅读时检索退下：检索只在卡片墙上有意义，留着只是一个会吃字不出结果的输入框 */
 .app.is-settings .search { display: none; }

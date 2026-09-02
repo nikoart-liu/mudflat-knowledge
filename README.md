@@ -59,4 +59,5 @@ src-tauri/src/sync.rs   同步引擎（增量拉取 + reconcile 软删）
 src-tauri/src/srs.rs    SM-2 简化调度（纯函数 + 单测）
 src-tauri/src/keystore.rs 本机 Key 文件读写（api.key，0600）
 src-tauri/src/llm.rs     语言模型供应商配置（llm.json + llm.key）
+src-tauri/src/mindmap.rs 按书划线归纳主题脑图（校验 + 生成 + 缓存）
 ```

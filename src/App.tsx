@@ -10,6 +10,9 @@ import {
   type LlmDraft,
   type LlmProvider,
   type LlmSettings,
+  type Mindmap,
+  type MindmapNode,
+  type MindmapStatus,
   type ReviewSettings,
   type SettingsInfo,
   type SetupStatus,
@@ -21,7 +24,7 @@ import {
 import './App.css';
 
 type CardsView = { name: 'cards'; bookId: number | null };
-type View = CardsView | { name: 'review'; bookId: number | null } | { name: 'settings' };
+type View = CardsView | { name: 'review'; bookId: number | null } | { name: 'mindmap'; bookId: number } | { name: 'settings' };
 
 export type WallScope = 'book' | 'chapter';
 export type WallGroup = { key: string; label: string; mono: boolean; cards: CardRow[] };
@@ -369,9 +372,7 @@ export default function App() {
       setView(lastViewRef.current);
       return;
     }
-    lastViewRef.current = view.name === 'review'
-      ? { name: 'review', bookId: view.bookId }
-      : { name: 'cards', bookId: view.bookId };
+    lastViewRef.current = { name: 'cards', bookId: view.bookId };
     setView({ name: 'settings' });
   };
 
@@ -428,7 +429,7 @@ export default function App() {
   const readingActive = reading && view.name === 'cards' && !searching;
 
   return (
-    <div className={`app${reviewing ? ' is-review' : ''}${readingActive ? ' is-reading' : ''}${view.name === 'settings' ? ' is-settings' : ''}`}>
+    <div className={`app${reviewing ? ' is-review' : ''}${view.name === 'mindmap' ? ' is-mindmap' : ''}${readingActive ? ' is-reading' : ''}${view.name === 'settings' ? ' is-settings' : ''}`}>
       <header className="topbar">
         <div className="logo">
           <img className="mark" src="/logo-mark.svg" width={20} height={20} alt="" />
@@ -587,6 +588,13 @@ export default function App() {
                               翻牌 {bookDue}
                             </button>
                           )}
+                          <button
+                            className="link-btn"
+                            onClick={() => setView({ name: 'mindmap', bookId: activeBook.id })}
+                            title="用划线归纳一张主题脑图"
+                          >
+                            线索
+                          </button>
                           <span className="card-date">{countLabel}</span>
                         </div>
                       </div>
@@ -658,6 +666,16 @@ export default function App() {
                 )}
               </div>
             </>
+          )}
+          {view.name === 'mindmap' && (
+            <MindmapView
+              book={books.find((b) => b.id === view.bookId) ?? { id: view.bookId, title: '当前刊物' }}
+              cards={cards}
+              onToast={showToast}
+              onExit={() => { refreshMeta(); setView({ name: 'cards', bookId: view.bookId }); }}
+              onOpenCard={(card) => setEditing(card)}
+              onNeedSettings={() => setView({ name: 'settings' })}
+            />
           )}
           {view.name === 'review' && (
             <ReviewView
@@ -1507,6 +1525,186 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
       )}
     </div>
   );
+}
+
+export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSettings }: {
+  book: { id: number; title: string };
+  cards: CardRow[];
+  onToast: (m: string) => void;
+  onExit: () => void;
+  onOpenCard: (card: CardRow) => void;
+  onNeedSettings: () => void;
+}) {
+  const [status, setStatus] = useState<MindmapStatus | null>(null);
+  const [map, setMap] = useState<Mindmap | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const byId = useMemo(() => {
+    const m = new Map<number, CardRow>();
+    for (const c of cards) m.set(c.id, c);
+    return m;
+  }, [cards]);
+
+  useEffect(() => {
+    let alive = true;
+    call<MindmapStatus>('get_mindmap_status', { bookId: book.id })
+      .then((s) => {
+        if (!alive) return;
+        setStatus(s);
+        if (s.cached) setMap(s.cached);
+      })
+      .catch((e) => onToast(explainError(e)));
+    return () => { alive = false; };
+  }, [book.id, onToast]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (typing) return;
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      if (openId) setOpenId(null);
+      else onExit();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openId, onExit]);
+
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const next = await call<Mindmap>('generate_mindmap', { bookId: book.id });
+      setMap(next);
+      setStatus((s) => s ? { ...s, cached: next, stale: false } : s);
+    } catch (e) {
+      onToast(explainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openNode = map && openId
+    ? findTheme(map.root, openId)
+    : null;
+  const evidence = openNode
+    ? openNode.sourceCardIds.map((id) => byId.get(id)).filter((c): c is CardRow => !!c)
+    : [];
+
+  return (
+    <div className="mindmap">
+      <h2 className="review-title">线索 · {book.title}</h2>
+      <p className="review-scope mono">概要节点 · 点开才看划线</p>
+      <div className="review-top">
+        <div className="review-remaining">
+          <span className="hint-mono">卡片 · 主题</span>
+          <span className="review-count">
+            {status ? `${status.cardCount} 张` : '…'}
+            {map ? ` · ${map.stats.themes} 题` : ''}
+          </span>
+        </div>
+        <button className="ghost" onClick={onExit}>返回（Esc）</button>
+      </div>
+      {!status && <p className="hint">载入线索…</p>}
+      {status?.providerOff && !map && (
+        <div className="deck-done">
+          <p className="review-text">还没有启用语言模型</p>
+          <p className="review-hint">到设置「四、语言模型」选择供应商后，才能把划线压成主题图。</p>
+          <div className="deck-done-actions">
+            <button className="primary" onClick={onNeedSettings}>去设置</button>
+            <button className="ghost" onClick={onExit}>返回卡片墙</button>
+          </div>
+        </div>
+      )}
+      {status && !status.providerOff && !map && (
+        <div className="deck-done">
+          <p className="review-text">把这本书的划线收成一张图</p>
+          <p className="review-hint">
+            将发送本书 {status.cardCount} 张卡片的标题级文本，不会上传整库。画面上只有概要，点节点才看原文。
+          </p>
+          <div className="deck-done-actions">
+            <button className="primary" onClick={() => void generate()} disabled={busy || status.cardCount < 2}>
+              {busy ? '归纳中…' : '生成线索'}
+            </button>
+            <button className="ghost" onClick={onExit}>返回卡片墙</button>
+          </div>
+        </div>
+      )}
+      {map && (
+        <>
+          {status?.stale && (
+            <p className="hint">划线已变，图还是上次的。
+              <button className="link-btn" onClick={() => void generate()} disabled={busy}>更新</button>
+            </p>
+          )}
+          <div className="mm-canvas">
+            <div className="mm-root">{map.root.label}</div>
+            <ul className="mm-level">
+              {map.root.children.map((n) => (
+                <li key={n.id}>
+                  <ThemeChip node={n} active={openId === n.id} onOpen={() => setOpenId(n.id)} />
+                  {n.children.length > 0 && (
+                    <ul className="mm-sub">
+                      {n.children.map((c) => (
+                        <li key={c.id}>
+                          <ThemeChip node={c} active={openId === c.id} onOpen={() => setOpenId(c.id)} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+          {map.warnings.length > 0 && (
+            <p className="hint">{map.warnings[map.warnings.length - 1]}</p>
+          )}
+        </>
+      )}
+      {openNode && (
+        <div className="modal-mask" onClick={() => setOpenId(null)}>
+          <div className="modal mm-drawer" role="dialog" aria-modal="true" aria-labelledby="mm-drawer-title" onClick={(e) => e.stopPropagation()}>
+            <h3 id="mm-drawer-title">{openNode.label}</h3>
+            {openNode.summary && <p className="hint">{openNode.summary}</p>}
+            <p className="hint-mono">证据 {evidence.length} 张</p>
+            <div className="mm-evidence">
+              {evidence.map((c) => (
+                <button key={c.id} className="mm-ev-item" onClick={() => onOpenCard(c)}>
+                  <span className="card-eyebrow">
+                    {c.starred ? '星标 · ' : ''}{c.kind === 'thought' ? '想法' : c.kind === 'self' ? '编者按' : '划线'}
+                    {c.chapterTitle ? ` · ${c.chapterTitle}` : ''}
+                  </span>
+                  <span className="mm-ev-text">{c.text}</span>
+                </button>
+              ))}
+              {evidence.length === 0 && <p className="hint">这些卡不在当前墙里，仍可在全书搜索中找到。</p>}
+            </div>
+            <div className="modal-actions">
+              <button className="ghost" onClick={() => setOpenId(null)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThemeChip({ node, active, onOpen }: { node: MindmapNode; active: boolean; onOpen: () => void }) {
+  return (
+    <button className={`mm-chip${active ? ' active' : ''}`} onClick={onOpen}>
+      <span className="mm-chip-label">{node.label}</span>
+      <span className="mm-chip-count mono">{node.sourceCardIds.length}</span>
+    </button>
+  );
+}
+
+function findTheme(node: MindmapNode, id: string): MindmapNode | null {
+  if (node.id === id && node.kind !== 'book') return node;
+  for (const c of node.children) {
+    const hit = findTheme(c, id);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 export function SettingsView({ onToast, hasKey, onKeyChange }: {

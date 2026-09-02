@@ -116,3 +116,31 @@ export interface LlmDraft {
   key: string;
 }
 
+export interface MindmapNode {
+  id: string;
+  label: string;
+  kind: 'book' | 'theme' | string;
+  summary?: string | null;
+  sourceCardIds: number[];
+  children: MindmapNode[];
+}
+
+export interface Mindmap {
+  bookId: number;
+  title: string;
+  mode: string;
+  inputHash: string;
+  promptVersion: string;
+  stats: { cards: number; chapters: number; themes: number; unplaced: number };
+  root: MindmapNode;
+  warnings: string[];
+}
+
+export interface MindmapStatus {
+  available: boolean;
+  providerOff: boolean;
+  cardCount: number;
+  cached: Mindmap | null;
+  stale: boolean;
+}
+

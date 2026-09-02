@@ -90,6 +90,10 @@ beforeEach(() => {
         return { lastFullSync: null, dataDir: null };
       case 'get_review_settings':
         return { batchSize: 20 };
+      case 'get_llm_settings':
+        return { provider: 'off', baseUrl: '', model: '', hasKey: false };
+      case 'get_mindmap_status':
+        return { available: false, providerOff: true, cardCount: 0, cached: null, stale: false };
       default:
         throw new Error(`测试未处理的命令: ${cmd}`);
     }
