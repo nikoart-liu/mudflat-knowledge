@@ -133,7 +133,7 @@ async fn test_llm_connection(app: tauri::AppHandle, draft: llm::LlmDraft) -> Res
     if !key.is_empty() {
         req = req.bearer_auth(key);
     }
-    let resp = req.send().await.map_err(|e| format!("连不上供应商: {}", llm::format_reqwest(e)))?;
+    let resp = req.send().await.map_err(|e| llm::describe_http_failure("测试连接", e))?;
     let status = resp.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err("API Key 无效或没有权限".into());

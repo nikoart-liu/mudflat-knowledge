@@ -17,8 +17,8 @@ const SUMMARY_MAX: usize = 40;
 const MAX_TOP: usize = 12;
 const MAX_SECONDARY: usize = 3;
 const MIN_EVIDENCE: usize = 2;
-const CARD_LINE_CHARS: usize = 80;
-const ONESHOT_LIMIT: usize = 80;
+const CARD_LINE_CHARS: usize = 72;
+const ONESHOT_LIMIT: usize = 40;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MindmapError {
@@ -427,11 +427,7 @@ pub async fn generate(
     let (cfg, key) = llm::load_runtime(dir).map_err(|e| MindmapError::Msg(e.to_string()))?;
 
     let hash = input_hash(cards);
-    let packed: Vec<String> = if cards.len() <= ONESHOT_LIMIT {
-        cards.iter().map(pack_card_line).collect()
-    } else {
-        pack_large(cards)
-    };
+    let packed = pack_for_prompt(cards);
     let raw = chat_complete(
         &cfg.base_url,
         &cfg.model,
@@ -446,8 +442,8 @@ pub async fn generate(
     Ok(clean)
 }
 
-fn pack_large(cards: &[CardRow]) -> Vec<String> {
-    // >80 张：星标/有想法/有注优先保留全文，其余只送短摘，但 id 全在。
+fn pack_for_prompt(cards: &[CardRow]) -> Vec<String> {
+    // 一次请求只送高权重的一小撮，避免 OpenCode Go 把整书 POST 拖过超时。
     let mut scored: Vec<(i32, &CardRow)> = cards
         .iter()
         .map(|c| {
@@ -461,19 +457,8 @@ fn pack_large(cards: &[CardRow]) -> Vec<String> {
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
     scored
         .into_iter()
-        .enumerate()
-        .map(|(i, (_, c))| {
-            if i < ONESHOT_LIMIT {
-                pack_card_line(c)
-            } else {
-                format!(
-                    "#{} [章:{}] [划线] {}",
-                    c.id,
-                    c.chapter_title.as_deref().unwrap_or("未分章"),
-                    truncate_chars(&c.text, 24)
-                )
-            }
-        })
+        .take(ONESHOT_LIMIT)
+        .map(|(_, c)| pack_card_line(c))
         .collect()
 }
 
@@ -485,7 +470,7 @@ async fn chat_complete(
     user: &str,
 ) -> MindmapResult<String> {
     let url = llm::chat_url(base_url);
-    let http = llm::http_client(Duration::from_secs(90)).map_err(MindmapError::Msg)?;
+    let http = llm::http_client(Duration::from_secs(180)).map_err(MindmapError::Msg)?;
     let body = serde_json::json!({
         "model": model,
         "temperature": 0.2,
@@ -501,7 +486,7 @@ async fn chat_complete(
     let resp = req
         .send()
         .await
-        .map_err(|e| MindmapError::Msg(format!("连不上语言模型: {}", llm::format_reqwest(e))))?;
+        .map_err(|e| MindmapError::Msg(llm::describe_http_failure("生成线索", e)))?;
     let status = resp.status();
     let text = resp.text().await.map_err(|e| MindmapError::Msg(format!("读取响应失败: {e}")))?;
     if status.as_u16() == 401 || status.as_u16() == 403 {
@@ -653,6 +638,15 @@ mod tests {
         assert!(line.contains("如何建立习惯"));
         assert!(line.contains("[星]"));
         assert!(line.contains("注:"));
+    }
+
+    #[test]
+    fn pack_for_prompt_caps_at_oneshot_limit() {
+        let cards: Vec<CardRow> = (1..=50)
+            .map(|i| card(i, "章", "highlight", "一段用来凑数的划线原文。", "", false))
+            .collect();
+        let packed = pack_for_prompt(&cards);
+        assert_eq!(packed.len(), ONESHOT_LIMIT);
     }
 
     #[test]

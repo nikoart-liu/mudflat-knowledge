@@ -200,6 +200,7 @@ const USER_AGENT: &str = "mudflat-knowledge/0.1 (https://github.com/mudflat-know
 
 pub fn http_client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(timeout)
         .user_agent(USER_AGENT)
         .build()
@@ -215,6 +216,21 @@ pub fn format_reqwest(err: reqwest::Error) -> String {
         src = e.source();
     }
     s
+}
+
+pub fn describe_http_failure(action: &str, err: reqwest::Error) -> String {
+    let detail = format_reqwest(err);
+    if detail.contains("timed out") || detail.contains("timeout") {
+        format!(
+            "{action}超时。测试连接只打 /models，生成线索要等模型写完整张图，请再试一次；若反复超时，换更快的模型或检查网络。"
+        )
+    } else if detail.contains("dns") || detail.contains("failed to lookup") {
+        format!("{action}失败：解析不到主机。{detail}")
+    } else if detail.contains("certificate") || detail.contains("tls") || detail.contains("SSL") {
+        format!("{action}失败：证书校验没通过。{detail}")
+    } else {
+        format!("{action}失败。{detail}")
+    }
 }
 
 pub fn normalize_draft(draft: &LlmDraft, existing_key: Option<&str>) -> LlmResult<Normalized> {
