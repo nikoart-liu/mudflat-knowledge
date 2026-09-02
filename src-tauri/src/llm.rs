@@ -203,6 +203,10 @@ pub fn http_client(timeout: std::time::Duration) -> Result<reqwest::Client, Stri
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(timeout)
         .user_agent(USER_AGENT)
+        // OpenCode / Cloudflare 对 HTTP/2 POST 偶发 RST（os error 54）；chat 走 1.1 更稳。
+        .http1_only()
+        .pool_max_idle_per_host(0)
+        .tcp_nodelay(true)
         .build()
         .map_err(|e| format!("无法创建连接: {e}"))
 }
@@ -223,6 +227,10 @@ pub fn describe_http_failure(action: &str, err: reqwest::Error) -> String {
     if detail.contains("timed out") || detail.contains("timeout") {
         format!(
             "{action}超时。测试连接只打 /models，生成线索要等模型写完整张图，请再试一次；若反复超时，换更快的模型或检查网络。"
+        )
+    } else if detail.contains("reset by peer") || detail.contains("os error 54") || detail.contains("connection error") {
+        format!(
+            "{action}时连接被对端断开。多半是网关/CDN 掐了 HTTP 连接，不是模型名错。请再试一次；若反复出现，换直连供应商或检查代理。"
         )
     } else if detail.contains("dns") || detail.contains("failed to lookup") {
         format!("{action}失败：解析不到主机。{detail}")

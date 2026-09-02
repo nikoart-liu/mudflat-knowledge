@@ -479,14 +479,45 @@ async fn chat_complete(
             { "role": "user", "content": user }
         ]
     });
-    let mut req = http.post(&url).json(&body);
-    if !key.is_empty() {
-        req = req.bearer_auth(key);
+    let mut last_err = None;
+    let mut resp = None;
+    for attempt in 0..3u32 {
+        let mut req = http.post(&url).json(&body);
+        if !key.is_empty() {
+            req = req.bearer_auth(key);
+        }
+        match req.send().await {
+            Ok(r) => {
+                resp = Some(r);
+                break;
+            }
+            Err(e) => {
+                let detail = llm::format_reqwest(e);
+                let transient = detail.contains("reset by peer")
+                    || detail.contains("os error 54")
+                    || detail.contains("timed out")
+                    || detail.contains("connection error");
+                last_err = Some(detail);
+                if !transient || attempt == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(400 * (attempt as u64 + 1))).await;
+            }
+        }
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| MindmapError::Msg(llm::describe_http_failure("生成线索", e)))?;
+    let resp = match resp {
+        Some(r) => r,
+        None => {
+            let detail = last_err.unwrap_or_else(|| "未知网络错误".into());
+            return Err(MindmapError::Msg(if detail.contains("reset by peer") || detail.contains("os error 54") {
+                format!("生成线索时连接被对端断开。请再试一次；若反复出现，换直连供应商。({detail})")
+            } else if detail.contains("timed out") {
+                "生成线索超时。请再试一次；若反复超时，换更快的模型。".into()
+            } else {
+                format!("生成线索失败。{detail}")
+            }));
+        }
+    };
     let status = resp.status();
     let text = resp.text().await.map_err(|e| MindmapError::Msg(format!("读取响应失败: {e}")))?;
     if status.as_u16() == 401 || status.as_u16() == 403 {
