@@ -100,3 +100,19 @@ export interface ReviewSettings {
   batchSize: number;
 }
 
+export type LlmProvider = 'off' | 'openai' | 'ollama' | 'custom';
+
+export interface LlmSettings {
+  provider: LlmProvider;
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+}
+
+export interface LlmDraft {
+  provider: LlmProvider;
+  baseUrl: string;
+  model: string;
+  key: string;
+}
+

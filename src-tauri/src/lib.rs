@@ -1,6 +1,7 @@
 pub mod db;
 mod gateway;
 mod keystore;
+mod llm;
 pub mod srs;
 mod sync;
 
@@ -86,6 +87,88 @@ async fn save_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
 async fn clear_api_key(app: tauri::AppHandle) -> Result<(), String> {
     let dir = data_dir(&app)?;
     tokio::task::block_in_place(|| keystore::clear_key(&dir).map_err(|e| e.to_string()))
+}
+
+// ---------- LLM provider (BYOK) ----------
+
+#[tauri::command]
+fn get_llm_settings(app: tauri::AppHandle) -> Result<llm::LlmSettings, String> {
+    let dir = data_dir(&app)?;
+    llm::load_settings(&dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_llm_settings(app: tauri::AppHandle, draft: llm::LlmDraft) -> Result<llm::LlmSettings, String> {
+    let dir = data_dir(&app)?;
+    tokio::task::block_in_place(|| {
+        let existing = llm::get_key(&dir).ok();
+        llm::save(&dir, &draft, existing.as_deref()).map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+async fn clear_llm_settings(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    tokio::task::block_in_place(|| llm::clear(&dir).map_err(|e| e.to_string()))
+}
+
+/// 用 OpenAI 兼容的 GET /models 探测供应商。不落盘。
+#[tauri::command]
+async fn test_llm_connection(app: tauri::AppHandle, draft: llm::LlmDraft) -> Result<String, String> {
+    let dir = data_dir(&app)?;
+    let existing = llm::get_key(&dir).ok();
+    let normalized = llm::normalize_draft(&draft, existing.as_deref()).map_err(|e| e.to_string())?;
+    if normalized.config.provider == llm::Provider::Off {
+        return Err("请先选择供应商".into());
+    }
+    let key = normalized
+        .key
+        .as_deref()
+        .or(existing.as_deref())
+        .unwrap_or("");
+    let url = llm::models_url(&normalized.config.base_url);
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("无法创建连接: {e}"))?;
+    let mut req = http.get(&url);
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().await.map_err(|e| format!("连不上供应商: {e}"))?;
+    let status = resp.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err("API Key 无效或没有权限".into());
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(120).collect();
+        return Err(format!("供应商返回 {status}: {snippet}"));
+    }
+    let wanted = normalized.config.model;
+    let parsed: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    let names = parse_model_ids(&parsed);
+    if names.is_empty() {
+        return Ok(format!("已接通 {wanted}（未返回模型列表）"));
+    }
+    if names.iter().any(|n| n == &wanted) {
+        return Ok(format!("连接成功：已找到模型 {wanted}"));
+    }
+    Ok(format!(
+        "已接通，但列表里没有「{wanted}」。可用 {} 个模型，请核对模型名。",
+        names.len()
+    ))
+}
+
+fn parse_model_ids(v: &serde_json::Value) -> Vec<String> {
+    v.get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 用输入框中的 key 临时测试：调一次 notebooks{count:1}，成功返回书本总数。
@@ -366,6 +449,10 @@ pub fn run() {
             get_settings,
             save_api_key,
             clear_api_key,
+            get_llm_settings,
+            save_llm_settings,
+            clear_llm_settings,
+            test_llm_connection,
             test_connection,
             open_external,
             sync_all,

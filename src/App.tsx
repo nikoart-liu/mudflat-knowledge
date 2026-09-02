@@ -7,6 +7,9 @@ import {
   type CardFilter,
   type CardRow,
   type ReviewRating,
+  type LlmDraft,
+  type LlmProvider,
+  type LlmSettings,
   type ReviewSettings,
   type SettingsInfo,
   type SetupStatus,
@@ -93,6 +96,12 @@ const RATING_DEFS: { key: ReviewRating; num: number; label: string }[] = [
 ];
 
 const REVIEW_BATCH_OPTIONS = [10, 20, 30];
+const LLM_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; model: string }[] = [
+  { key: 'off', label: '关闭', baseUrl: '', model: '' },
+  { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { key: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5' },
+  { key: 'custom', label: '自定义', baseUrl: '', model: '' },
+];
 const EXCLUDE_HINT_KEY = 'mudflat.exclude-hint-seen';
 const READING_MODE_KEY = 'mudflat.reading-mode';
 
@@ -1500,7 +1509,7 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
   );
 }
 
-function SettingsView({ onToast, hasKey, onKeyChange }: {
+export function SettingsView({ onToast, hasKey, onKeyChange }: {
   onToast: (m: string) => void;
   hasKey: boolean;
   onKeyChange: () => Promise<void> | void;
@@ -1510,12 +1519,29 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [batchSize, setBatchSize] = useState<number | null>(null);
+  const [llm, setLlm] = useState<LlmSettings | null>(null);
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>('off');
+  const [llmBaseUrl, setLlmBaseUrl] = useState('');
+  const [llmModel, setLlmModel] = useState('');
+  const [llmKey, setLlmKey] = useState('');
+  const [llmTesting, setLlmTesting] = useState(false);
+  const [llmResult, setLlmResult] = useState<string | null>(null);
 
   useEffect(() => {
     call<SettingsInfo>('get_settings').then(setStatus).catch(() => {});
     call<ReviewSettings>('get_review_settings')
       .then((s) => setBatchSize(s.batchSize))
       .catch(() => setBatchSize(20));
+    call<LlmSettings>('get_llm_settings')
+      .then((s) => {
+        setLlm(s);
+        setLlmProvider(s.provider);
+        setLlmBaseUrl(s.baseUrl);
+        setLlmModel(s.model);
+      })
+      .catch(() => {
+        setLlm({ provider: 'off', baseUrl: '', model: '', hasKey: false });
+      });
   }, []);
 
   const saveBatch = async (size: number) => {
@@ -1548,6 +1574,74 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
       await call('save_api_key', { key: key.trim() });
       await onKeyChange();
       onToast('API Key 已保存到本机。点顶栏「同步」接进划线。');
+    } catch (e) {
+      onToast(explainError(e));
+    }
+  };
+
+  const llmDraft = (): LlmDraft => ({
+    provider: llmProvider,
+    baseUrl: llmBaseUrl.trim(),
+    model: llmModel.trim(),
+    key: llmKey.trim(),
+  });
+
+  const applyLlmPreset = (next: LlmProvider) => {
+    const preset = LLM_PROVIDERS.find((p) => p.key === next);
+    setLlmProvider(next);
+    setLlmResult(null);
+    if (!preset) return;
+    if (next === 'off') {
+      setLlmBaseUrl('');
+      setLlmModel('');
+      setLlmKey('');
+      return;
+    }
+    const urlIsPreset = !llmBaseUrl.trim()
+      || LLM_PROVIDERS.some((p) => p.baseUrl && p.baseUrl === llmBaseUrl.trim());
+    const modelIsPreset = !llmModel.trim()
+      || LLM_PROVIDERS.some((p) => p.model && p.model === llmModel.trim());
+    if (urlIsPreset && preset.baseUrl) setLlmBaseUrl(preset.baseUrl);
+    if (modelIsPreset && preset.model) setLlmModel(preset.model);
+  };
+
+  const testLlm = async () => {
+    setLlmTesting(true);
+    setLlmResult(null);
+    try {
+      const msg = await call<string>('test_llm_connection', { draft: llmDraft() });
+      setLlmResult(msg);
+    } catch (e) {
+      setLlmResult(`失败：${explainError(e)}`);
+    } finally {
+      setLlmTesting(false);
+    }
+  };
+
+  const saveLlm = async () => {
+    try {
+      const saved = await call<LlmSettings>('save_llm_settings', { draft: llmDraft() });
+      setLlm(saved);
+      setLlmProvider(saved.provider);
+      setLlmBaseUrl(saved.baseUrl);
+      setLlmModel(saved.model);
+      setLlmKey('');
+      onToast(saved.provider === 'off' ? '已关闭语言模型。' : '语言模型已保存到本机。默认不会上传整库。');
+    } catch (e) {
+      onToast(explainError(e));
+    }
+  };
+
+  const clearLlm = async () => {
+    try {
+      await call('clear_llm_settings');
+      setLlm({ provider: 'off', baseUrl: '', model: '', hasKey: false });
+      setLlmProvider('off');
+      setLlmBaseUrl('');
+      setLlmModel('');
+      setLlmKey('');
+      setLlmResult(null);
+      onToast('已清除语言模型配置');
     } catch (e) {
       onToast(explainError(e));
     }
@@ -1614,7 +1708,78 @@ function SettingsView({ onToast, hasKey, onKeyChange }: {
         </div>
       </section>
       <section>
-        <h3>四、关于</h3>
+        <h3>四、语言模型</h3>
+        <p className="hint">
+          默认关闭。脑图、问题面等能力需要时才出网；每次只发送当前动作用到的卡片，不会上传整库。
+          Key 存在本机数据目录的 <code>llm.key</code>，与微信读书 Key 分开。
+        </p>
+        <p className="hint">
+          {llm
+            ? (llm.provider === 'off'
+              ? '当前未启用。'
+              : `当前：${LLM_PROVIDERS.find((p) => p.key === llm.provider)?.label ?? llm.provider}${llm.hasKey ? ' · 已存 Key' : ' · 未存 Key'}`)
+            : '载入配置…'}
+        </p>
+        <div className="row batch-options" role="group" aria-label="语言模型供应商">
+          {LLM_PROVIDERS.map((p) => (
+            <button
+              key={p.key}
+              className={llmProvider === p.key ? 'active' : ''}
+              aria-pressed={llmProvider === p.key}
+              disabled={llm === null}
+              onClick={() => applyLlmPreset(p.key)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {llmProvider !== 'off' && (
+          <>
+            <label className="field-label" htmlFor="llm-base">接口地址</label>
+            <input
+              id="llm-base"
+              value={llmBaseUrl}
+              onChange={(e) => setLlmBaseUrl(e.target.value)}
+              placeholder={LLM_PROVIDERS.find((p) => p.key === llmProvider)?.baseUrl || 'https://api.example.com/v1'}
+              aria-label="语言模型接口地址"
+            />
+            <label className="field-label" htmlFor="llm-model">模型</label>
+            <input
+              id="llm-model"
+              value={llmModel}
+              onChange={(e) => setLlmModel(e.target.value)}
+              placeholder={LLM_PROVIDERS.find((p) => p.key === llmProvider)?.model || '模型名'}
+              aria-label="语言模型名"
+            />
+            <label className="field-label" htmlFor="llm-key">API Key</label>
+            <input
+              id="llm-key"
+              type="password"
+              value={llmKey}
+              onChange={(e) => setLlmKey(e.target.value)}
+              placeholder={llm?.hasKey ? '已保存，留空则沿用' : (llmProvider === 'ollama' ? '本机可留空' : 'sk-...')}
+              aria-label="语言模型 API Key"
+            />
+            <p className="hint">
+              {llmProvider === 'ollama'
+                ? 'Ollama 默认走本机 11434 端口，一般不用 Key。请先在本机运行对应模型。'
+                : llmProvider === 'custom'
+                  ? '兼容 OpenAI 的 /v1 接口即可，例如 DeepSeek、硅基流动。非本机地址必须是 https。'
+                  : 'Key 只存在本机。测试连接会请求供应商的模型列表，不发送卡片正文。'}
+            </p>
+          </>
+        )}
+        <div className="row">
+          {llmProvider !== 'off' && (
+            <button onClick={testLlm} disabled={llmTesting || llm === null}>{llmTesting ? '测试中…' : '测试连接'}</button>
+          )}
+          <button className="primary" onClick={saveLlm} disabled={llm === null}>保存到本机</button>
+          <button className="ghost" onClick={clearLlm} disabled={!llm || (llm.provider === 'off' && !llm.hasKey)}>清除</button>
+        </div>
+        {llmResult && <p className={llmResult.startsWith('失败') ? 'err' : 'ok'}>{llmResult}</p>}
+      </section>
+      <section>
+        <h3>五、关于</h3>
         <p className="hint">数据目录：{status?.dataDir ?? '未知'}（mudflat.db）</p>
         <p className="hint">纯本地存储 · 无账号 · 无云同步</p>
       </section>

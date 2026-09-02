@@ -641,13 +641,20 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   margin: 0 0 10px; font-family: var(--font-mono); font-size: 12px; font-weight: 400;
   color: var(--ink); letter-spacing: 0.1em;
 }
-.settings input[type="password"] {
+.settings input[type="password"],
+.settings input[type="text"],
+.settings input:not([type]) {
   width: 100%; padding: 12px 16px; border: 1px solid var(--ink);
   border-radius: 0; font-size: 15px; background: transparent; color: var(--ink);
-  font-family: var(--font-display); letter-spacing: 0.2em;
+  font-family: var(--font-display);
   transition: box-shadow var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
 }
+.settings input[type="password"] { letter-spacing: 0.2em; }
 .settings input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 1px var(--ember); }
+.settings .field-label {
+  display: block; margin: 16px 0 6px;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
+}
 code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-family: var(--font-mono); }
 .settings .row { display: flex; gap: 12px; margin-top: 16px; }
 .settings a { color: var(--ink); text-underline-offset: 3px; }

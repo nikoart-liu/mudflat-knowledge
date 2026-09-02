@@ -41,7 +41,8 @@ Windows 安装包使用 NSIS（`.exe`），不生成 MSI：WiX 无法处理中�
 ## 数据与目录
 
 - 数据库：`~/Library/Application Support/com.mudflat.knowledge/mudflat.db`（SQLite，WAL 模式，FTS5 trigram 中文子串搜索）
-- API Key：`~/Library/Application Support/com.mudflat.knowledge/api.key`（明文小文件，权限 0600，与数据库同目录，删除即清除）
+- 微信读书 API Key：`~/Library/Application Support/com.mudflat.knowledge/api.key`（明文小文件，权限 0600，与数据库同目录，删除即清除）
+- 语言模型：同目录 `llm.json`（供应商/地址/模型）+ `llm.key`（0600）；设置里默认关闭，与微信读书 Key 分开
 
 ## 接口契约备忘
 
@@ -57,4 +58,5 @@ src-tauri/src/gateway.rs 网关 HTTP 客户端（300ms 节流）
 src-tauri/src/sync.rs   同步引擎（增量拉取 + reconcile 软删）
 src-tauri/src/srs.rs    SM-2 简化调度（纯函数 + 单测）
 src-tauri/src/keystore.rs 本机 Key 文件读写（api.key，0600）
+src-tauri/src/llm.rs     语言模型供应商配置（llm.json + llm.key）
 ```
