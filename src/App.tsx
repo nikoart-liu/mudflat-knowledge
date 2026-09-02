@@ -22,6 +22,7 @@ import {
   type TagRow,
 } from './types';
 import './App.css';
+import { layoutMindmap } from './mindmap-layout';
 
 type CardsView = { name: 'cards'; bookId: number | null };
 type View = CardsView | { name: 'review'; bookId: number | null } | { name: 'mindmap'; bookId: number } | { name: 'settings' };
@@ -1652,25 +1653,7 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
               {busy ? '归纳中…' : (status?.stale ? '更新' : '重新生成')}
             </button>
           </p>
-          <div className="mm-canvas">
-            <div className="mm-root">{map.root.label}</div>
-            <ul className="mm-level">
-              {map.root.children.map((n) => (
-                <li key={n.id}>
-                  <ThemeChip node={n} active={openId === n.id} onOpen={() => setOpenId(n.id)} />
-                  {n.children.length > 0 && (
-                    <ul className="mm-sub">
-                      {n.children.map((c) => (
-                        <li key={c.id}>
-                          <ThemeChip node={c} active={openId === c.id} onOpen={() => setOpenId(c.id)} />
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
+          <MindmapCanvas mapRoot={map.root} openId={openId} onOpen={setOpenId} />
           {map.warnings.length > 0 && (
             <p className="hint">{map.warnings[map.warnings.length - 1]}</p>
           )}
@@ -1704,12 +1687,47 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
   );
 }
 
-function ThemeChip({ node, active, onOpen }: { node: MindmapNode; active: boolean; onOpen: () => void }) {
+function MindmapCanvas({ mapRoot, openId, onOpen }: {
+  mapRoot: MindmapNode;
+  openId: string | null;
+  onOpen: (id: string) => void;
+}) {
+  const laid = useMemo(() => layoutMindmap(mapRoot), [mapRoot]);
   return (
-    <button className={`mm-chip${active ? ' active' : ''}`} onClick={onOpen}>
-      <span className="mm-chip-label">{node.label}</span>
-      <span className="mm-chip-count mono">{node.sourceCardIds.length}</span>
-    </button>
+    <div className="mm-stage">
+      <div className="mm-canvas" style={{ width: laid.width, height: laid.height }}>
+        <svg className="mm-wires" width={laid.width} height={laid.height} aria-hidden="true">
+          {laid.edges.map((e) => (
+            <line
+              key={`${e.from}-${e.to}`}
+              x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
+              className={e.from === mapRoot.id ? 'mm-wire hub' : 'mm-wire'}
+            />
+          ))}
+        </svg>
+        {laid.nodes.map((p) => (
+          p.depth === 0 ? (
+            <div
+              key={p.id}
+              className="mm-hub"
+              style={{ left: p.x, top: p.y, width: p.w, height: p.h }}
+            >
+              <span className="mm-hub-label">{p.node.label}</span>
+            </div>
+          ) : (
+            <button
+              key={p.id}
+              className={`mm-chip depth-${p.depth}${openId === p.id ? ' active' : ''}`}
+              style={{ left: p.x, top: p.y, width: p.w, minHeight: p.h }}
+              onClick={() => onOpen(p.id)}
+            >
+              <span className="mm-chip-label">{p.node.label}</span>
+              <span className="mm-chip-count mono">{p.node.sourceCardIds.length}</span>
+            </button>
+          )
+        ))}
+      </div>
+    </div>
   );
 }
 

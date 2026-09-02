@@ -701,24 +701,34 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
 .app.is-mindmap .search,
 .app.is-mindmap .top-sync { display: none; }
 
-.mindmap { max-width: 860px; margin: 0 auto; padding: 32px 32px 96px; }
-.mm-canvas { margin-top: 24px; }
-.mm-root {
-  font-family: var(--font-display); font-weight: 700; font-size: 22px;
-  letter-spacing: 0.12em; text-align: center; padding: 8px 0 20px;
+.mindmap { max-width: none; margin: 0; padding: 24px 24px 64px; }
+.mm-stage { overflow: auto; margin-top: 16px; border-top: 1px solid var(--editorial-line); padding-top: 16px; }
+.mm-canvas { position: relative; margin: 0 auto; min-height: 420px; }
+.mm-wires { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.mm-wire { stroke: var(--editorial-line); stroke-width: 1.5; }
+.mm-wire.hub { stroke: var(--ink); stroke-width: 2; }
+.mm-hub {
+  position: absolute; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--editorial-line); background: var(--paper);
+  padding: 10px 14px; text-align: center;
 }
-.mm-level { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
-.mm-level > li { min-width: 200px; max-width: 280px; }
-.mm-sub { list-style: none; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid var(--hairline); display: flex; flex-direction: column; gap: 8px; }
+.mm-hub-label {
+  font-family: var(--font-display); font-weight: 700; font-size: 18px;
+  letter-spacing: 0.08em; line-height: 1.25;
+}
 .mm-chip {
-  width: 100%; text-align: left; border: 1px solid var(--editorial-line);
+  position: absolute; z-index: 2;
+  text-align: left; border: 1px solid var(--editorial-line);
   background: var(--paper); color: var(--ink); border-radius: 0;
-  padding: 12px 14px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
 }
+.mm-chip.depth-2 { border-color: var(--hairline); }
 .mm-chip:hover:not(:disabled) { background: var(--selection); }
 .mm-chip.active { border-color: var(--ember); box-shadow: 0 0 0 1px var(--ember); }
-.mm-chip-label { font-family: var(--font-display); font-weight: 700; font-size: 16px; line-height: 1.4; }
-.mm-chip-count { font-size: 10px; color: var(--ink-muted); flex-shrink: 0; padding-top: 4px; }
+.mm-chip-label { font-family: var(--font-display); font-weight: 700; font-size: 15px; line-height: 1.35; }
+.mm-chip.depth-2 .mm-chip-label { font-size: 13px; font-weight: 400; font-family: var(--font-body); }
+.mm-chip-count { font-size: 10px; color: var(--ink-muted); flex-shrink: 0; padding-top: 2px; }
 .mm-drawer { max-width: 520px; }
 .mm-evidence { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow: auto; margin-top: 12px; }
 .mm-ev-item {
