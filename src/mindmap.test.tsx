@@ -46,6 +46,36 @@ const map: Mindmap = {
   warnings: [],
 };
 
+const branched: Mindmap = {
+  ...map,
+  stats: { ...map.stats, themes: 2 },
+  root: {
+    ...map.root,
+    children: [
+      {
+        id: 't-env',
+        label: '环境在替你做决定',
+        kind: 'theme',
+        summary: '少靠自控，多改摆设。',
+        sourceCardIds: [8, 9],
+        children: [
+          { id: 't-env-1', label: '把充电器换房间', kind: 'theme', sourceCardIds: [8], children: [] },
+          { id: 't-env-2', label: '书放在沙发上', kind: 'theme', sourceCardIds: [9], children: [] },
+        ],
+      },
+      {
+        id: 't-id',
+        label: '身份由重复塑造',
+        kind: 'theme',
+        sourceCardIds: [8],
+        children: [
+          { id: 't-id-1', label: '先成为那种人', kind: 'theme', sourceCardIds: [8], children: [] },
+        ],
+      },
+    ],
+  },
+};
+
 describe('MindmapView', () => {
   beforeEach(() => callMock.mockReset());
 
@@ -127,5 +157,99 @@ describe('MindmapView', () => {
     expect(await screen.findByText('环境是无形的手。')).toBeTruthy();
     fireEvent.click(screen.getByText('环境是无形的手。'));
     expect(opened).toEqual([8]);
+    expect(screen.queryByRole('button', { name: /子题/ })).toBeNull();
+  });
+
+  it('有二级的一级露出子题 N，默认不画二级', async () => {
+    callMock.mockImplementation(async (cmd?: string) => {
+      if (!cmd || cmd === 'get_mindmap_status') {
+        return { available: true, providerOff: false, cardCount: 4, cached: branched, stale: false };
+      }
+      throw new Error(`未处理 ${cmd}`);
+    });
+    render(
+      <MindmapView
+        book={{ id: 1, title: '原子习惯' }}
+        cards={[card(8, '环境是无形的手。'), card(9, '把书放在沙发上。')]}
+        onToast={() => {}}
+        onExit={() => {}}
+        onOpenCard={() => {}}
+        onNeedSettings={() => {}}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: '子题 2' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '子题 1' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /把充电器换房间/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /先成为那种人/ })).toBeNull();
+  });
+
+  it('点子题 N 只长出该枝，不开证据抽屉', async () => {
+    callMock.mockImplementation(async (cmd?: string) => {
+      if (!cmd || cmd === 'get_mindmap_status') {
+        return { available: true, providerOff: false, cardCount: 4, cached: branched, stale: false };
+      }
+      throw new Error(`未处理 ${cmd}`);
+    });
+    render(
+      <MindmapView
+        book={{ id: 1, title: '原子习惯' }}
+        cards={[card(8, '环境是无形的手。'), card(9, '把书放在沙发上。')]}
+        onToast={() => {}}
+        onExit={() => {}}
+        onOpenCard={() => {}}
+        onNeedSettings={() => {}}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '子题 2' }));
+    expect(await screen.findByRole('button', { name: /把充电器换房间/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /书放在沙发上/ })).toBeTruthy();
+    expect(screen.queryByText('环境是无形的手。')).toBeNull();
+    expect(screen.queryByRole('button', { name: /先成为那种人/ })).toBeNull();
+  });
+
+  it('点有子题的一级标题仍开证据抽屉', async () => {
+    callMock.mockImplementation(async (cmd?: string) => {
+      if (!cmd || cmd === 'get_mindmap_status') {
+        return { available: true, providerOff: false, cardCount: 4, cached: branched, stale: false };
+      }
+      throw new Error(`未处理 ${cmd}`);
+    });
+    render(
+      <MindmapView
+        book={{ id: 1, title: '原子习惯' }}
+        cards={[card(8, '环境是无形的手。'), card(9, '把书放在沙发上。')]}
+        onToast={() => {}}
+        onExit={() => {}}
+        onOpenCard={() => {}}
+        onNeedSettings={() => {}}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /环境在替你做决定/ }));
+    expect(await screen.findByText('环境是无形的手。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /把充电器换房间/ })).toBeNull();
+  });
+
+  it('展开另一枝时收回上一枝', async () => {
+    callMock.mockImplementation(async (cmd?: string) => {
+      if (!cmd || cmd === 'get_mindmap_status') {
+        return { available: true, providerOff: false, cardCount: 4, cached: branched, stale: false };
+      }
+      throw new Error(`未处理 ${cmd}`);
+    });
+    render(
+      <MindmapView
+        book={{ id: 1, title: '原子习惯' }}
+        cards={[card(8, '环境是无形的手。'), card(9, '把书放在沙发上。')]}
+        onToast={() => {}}
+        onExit={() => {}}
+        onOpenCard={() => {}}
+        onNeedSettings={() => {}}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '子题 2' }));
+    expect(await screen.findByRole('button', { name: /把充电器换房间/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '子题 1' }));
+    expect(await screen.findByRole('button', { name: /先成为那种人/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /把充电器换房间/ })).toBeNull();
   });
 });

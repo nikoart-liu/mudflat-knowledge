@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { Channel } from '@tauri-apps/api/core';
 import {
   call,
@@ -22,7 +22,7 @@ import {
   type TagRow,
 } from './types';
 import './App.css';
-import { layoutMindmap } from './mindmap-layout';
+import { layoutMindmap, visibleClue } from './mindmap-layout';
 
 type CardsView = { name: 'cards'; bookId: number | null };
 type View = CardsView | { name: 'review'; bookId: number | null } | { name: 'mindmap'; bookId: number } | { name: 'settings' };
@@ -1687,15 +1687,142 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
   );
 }
 
+function panToShow(
+  pan: { x: number; y: number },
+  rect: { minX: number; minY: number; maxX: number; maxY: number },
+  viewW: number,
+  viewH: number,
+  pad = 32,
+): { x: number; y: number } {
+  let { x, y } = pan;
+  const w = rect.maxX - rect.minX;
+  const h = rect.maxY - rect.minY;
+  if (w > viewW - pad * 2) x = viewW / 2 - (rect.minX + rect.maxX) / 2;
+  else {
+    const l = rect.minX + x;
+    const r = rect.maxX + x;
+    if (l < pad) x += pad - l;
+    if (r > viewW - pad) x -= r - (viewW - pad);
+  }
+  if (h > viewH - pad * 2) y = viewH / 2 - (rect.minY + rect.maxY) / 2;
+  else {
+    const t = rect.minY + y;
+    const b = rect.maxY + y;
+    if (t < pad) y += pad - t;
+    if (b > viewH - pad) y -= b - (viewH - pad);
+  }
+  return { x, y };
+}
+
 function MindmapCanvas({ mapRoot, openId, onOpen }: {
   mapRoot: MindmapNode;
   openId: string | null;
   onOpen: (id: string) => void;
 }) {
-  const laid = useMemo(() => layoutMindmap(mapRoot), [mapRoot]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ px: number; py: number; panX: number; panY: number } | null>(null);
+  const centered = useRef(false);
+  const vis = useMemo(() => visibleClue(mapRoot, expandedId), [mapRoot, expandedId]);
+  const childCount = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of mapRoot.children) m.set(c.id, c.children.length);
+    return m;
+  }, [mapRoot]);
+  const expandIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const [id, n] of childCount) if (n > 0) s.add(id);
+    return s;
+  }, [childCount]);
+  const laid = useMemo(() => layoutMindmap(vis, expandIds), [vis, expandIds]);
+
+  useEffect(() => {
+    centered.current = false;
+    setExpandedId(null);
+    setPan({ x: 0, y: 0 });
+  }, [mapRoot]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const sw = stage.clientWidth;
+    const sh = stage.clientHeight;
+    if (sw < 8 || sh < 8) return;
+    const hub = laid.nodes.find((n) => n.depth === 0);
+    if (!hub) return;
+    if (!expandedId) {
+      if (centered.current) return;
+      setPan({
+        x: sw / 2 - (hub.x + hub.w / 2),
+        y: sh / 2 - (hub.y + hub.h / 2),
+      });
+      centered.current = true;
+      return;
+    }
+    const follow = laid.nodes.filter((n) => n.depth === 2 || n.id === expandedId);
+    if (!follow.length) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of follow) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + n.w);
+      maxY = Math.max(maxY, n.y + n.h);
+    }
+    setPan((cur) => panToShow(cur, { minX, minY, maxX, maxY }, sw, sh));
+  }, [laid, expandedId]);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('button') || t.closest('.mm-chip') || t.closest('.mm-hub')) return;
+    drag.current = { px: e.clientX, py: e.clientY, panX: pan.x, panY: pan.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+  };
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!drag.current) return;
+    setPan({
+      x: drag.current.panX + (e.clientX - drag.current.px),
+      y: drag.current.panY + (e.clientY - drag.current.py),
+    });
+  };
+  const endDrag = () => {
+    drag.current = null;
+    setDragging(false);
+  };
+
   return (
-    <div className="mm-stage">
-      <div className="mm-canvas" style={{ width: laid.width, height: laid.height }}>
+    <div
+      ref={stageRef}
+      className={`mm-stage${dragging ? ' is-panning' : ''}`}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+    >
+      <div
+        className="mm-canvas"
+        style={{
+          width: laid.width,
+          height: laid.height,
+          transform: `translate(${pan.x}px, ${pan.y}px)`,
+        }}
+      >
         <svg className="mm-wires" width={laid.width} height={laid.height} aria-hidden="true">
           {laid.edges.map((e) => (
             <line
@@ -1715,15 +1842,26 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
               <span className="mm-hub-label">{p.node.label}</span>
             </div>
           ) : (
-            <button
+            <div
               key={p.id}
-              className={`mm-chip depth-${p.depth}${openId === p.id ? ' active' : ''}`}
+              className={`mm-chip depth-${p.depth}${openId === p.id ? ' active' : ''}${expandedId === p.id ? ' is-expanded' : ''}`}
               style={{ left: p.x, top: p.y, width: p.w, minHeight: p.h }}
-              onClick={() => onOpen(p.id)}
             >
-              <span className="mm-chip-label">{p.node.label}</span>
-              <span className="mm-chip-count mono">{p.node.sourceCardIds.length}</span>
-            </button>
+              <button type="button" className="mm-chip-main" onClick={() => onOpen(p.id)}>
+                <span className="mm-chip-label">{p.node.label}</span>
+                <span className="mm-chip-count mono">{p.node.sourceCardIds.length}</span>
+              </button>
+              {(childCount.get(p.id) ?? 0) > 0 && (
+                <button
+                  type="button"
+                  className="mm-chip-expand mono"
+                  aria-pressed={expandedId === p.id}
+                  onClick={() => setExpandedId((cur) => cur === p.id ? null : p.id)}
+                >
+                  子题 {childCount.get(p.id)}
+                </button>
+              )}
+            </div>
           )
         ))}
       </div>

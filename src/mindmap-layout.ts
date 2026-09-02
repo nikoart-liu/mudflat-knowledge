@@ -28,6 +28,16 @@ export type MindmapLayout = {
 
 const PAD = 48;
 
+export function visibleClue(root: MindmapNode, expandedId: string | null): MindmapNode {
+  return {
+    ...root,
+    children: root.children.map((child) => ({
+      ...child,
+      children: child.id === expandedId ? child.children : [],
+    })),
+  };
+}
+
 function charCount(s: string): number {
   return [...s].length;
 }
@@ -49,58 +59,98 @@ function centerOf(n: LaidNode): { x: number; y: number } {
   return { x: n.x + n.w / 2, y: n.y + n.h / 2 };
 }
 
+function clipToBoxEdge(from: { x: number; y: number }, to: { x: number; y: number }, box: LaidNode): { x: number; y: number } {
+  const vx = to.x - from.x;
+  const vy = to.y - from.y;
+  if (vx === 0 && vy === 0) return from;
+  const hw = box.w / 2;
+  const hh = box.h / 2;
+  const sx = vx === 0 ? Infinity : hw / Math.abs(vx);
+  const sy = vy === 0 ? Infinity : hh / Math.abs(vy);
+  const t = Math.min(sx, sy);
+  return { x: from.x + t * vx, y: from.y + t * vy };
+}
+
+const BOX_GAP = 24;
+
+function boxesOverlap(a: LaidNode, b: LaidNode): boolean {
+  return !(a.x + a.w + BOX_GAP <= b.x || b.x + b.w + BOX_GAP <= a.x
+    || a.y + a.h + BOX_GAP <= b.y || b.y + b.h + BOX_GAP <= a.y);
+}
+
+function anyOverlap(nodes: LaidNode[]): boolean {
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (boxesOverlap(nodes[i], nodes[j])) return true;
+    }
+  }
+  return false;
+}
+
+const EXPAND_ROW = 22;
+
 /// 中心辐射：根在中间，一级沿椭圆均分，二级沿同一方向再外扩。
-export function layoutMindmap(root: MindmapNode): MindmapLayout {
-  const nodes: LaidNode[] = [];
+export function layoutMindmap(root: MindmapNode, expandIds?: ReadonlySet<string>): MindmapLayout {
   const rootBox = nodeBox(root.label, 0);
   const n = root.children.length;
-  const rx = Math.max(250, 58 * Math.max(n, 3));
-  const ry = Math.max(170, 42 * Math.max(n, 3));
-  const cx = rx + 220;
-  const cy = ry + 160;
+  let rx = Math.max(220, 48 * Math.max(n, 3));
+  let ry = Math.max(150, 34 * Math.max(n, 3));
+  let r2x = 168;
+  let r2y = 112;
+  let nodes: LaidNode[] = [];
 
-  nodes.push({
-    id: root.id,
-    depth: 0,
-    x: cx - rootBox.w / 2,
-    y: cy - rootBox.h / 2,
-    w: rootBox.w,
-    h: rootBox.h,
-    node: root,
-  });
-
-  root.children.forEach((child, i) => {
-    const angle = n === 1 ? 0 : -Math.PI / 2 + (2 * Math.PI * i) / n;
-    const box = nodeBox(child.label, 1);
-    const px = cx + Math.cos(angle) * rx;
-    const py = cy + Math.sin(angle) * ry;
-    nodes.push({
-      id: child.id,
-      depth: 1,
-      x: px - box.w / 2,
-      y: py - box.h / 2,
-      w: box.w,
-      h: box.h,
-      node: child,
-    });
-    const k = child.children.length;
-    child.children.forEach((grand, j) => {
-      const spread = k <= 1 ? 0 : (j - (k - 1) / 2) * 0.28;
-      const a2 = angle + spread;
-      const box2 = nodeBox(grand.label, 2);
-      const px2 = cx + Math.cos(a2) * (rx + 168);
-      const py2 = cy + Math.sin(a2) * (ry + 112);
+  for (let iter = 0; iter < 24; iter++) {
+    const cx = rx + 220;
+    const cy = ry + 160;
+    nodes = [{
+      id: root.id,
+      depth: 0,
+      x: cx - rootBox.w / 2,
+      y: cy - rootBox.h / 2,
+      w: rootBox.w,
+      h: rootBox.h,
+      node: root,
+    }];
+    root.children.forEach((child, i) => {
+      const angle = n === 1 ? 0 : -Math.PI / 2 + (2 * Math.PI * i) / n;
+      const box = nodeBox(child.label, 1);
+      const extra = (child.children.length > 0 || expandIds?.has(child.id)) ? EXPAND_ROW : 0;
+      const h = box.h + extra;
+      const px = cx + Math.cos(angle) * rx;
+      const py = cy + Math.sin(angle) * ry;
       nodes.push({
-        id: grand.id,
-        depth: 2,
-        x: px2 - box2.w / 2,
-        y: py2 - box2.h / 2,
-        w: box2.w,
-        h: box2.h,
-        node: grand,
+        id: child.id,
+        depth: 1,
+        x: px - box.w / 2,
+        y: py - h / 2,
+        w: box.w,
+        h,
+        node: child,
+      });
+      const k = child.children.length;
+      child.children.forEach((grand, j) => {
+        const spread = k <= 1 ? 0 : (j - (k - 1) / 2) * 0.28;
+        const a2 = angle + spread;
+        const box2 = nodeBox(grand.label, 2);
+        const px2 = cx + Math.cos(a2) * (rx + r2x);
+        const py2 = cy + Math.sin(a2) * (ry + r2y);
+        nodes.push({
+          id: grand.id,
+          depth: 2,
+          x: px2 - box2.w / 2,
+          y: py2 - box2.h / 2,
+          w: box2.w,
+          h: box2.h,
+          node: grand,
+        });
       });
     });
-  });
+    if (!anyOverlap(nodes)) break;
+    rx *= 1.12;
+    ry *= 1.12;
+    r2x *= 1.12;
+    r2y *= 1.12;
+  }
 
   let minX = Infinity;
   let minY = Infinity;
@@ -129,7 +179,9 @@ export function layoutMindmap(root: MindmapNode): MindmapLayout {
       if (b) {
         const ac = centerOf(a);
         const bc = centerOf(b);
-        edges.push({ from: a.id, to: b.id, x1: ac.x, y1: ac.y, x2: bc.x, y2: bc.y });
+        const p1 = clipToBoxEdge(ac, bc, a);
+        const p2 = clipToBoxEdge(bc, ac, b);
+        edges.push({ from: a.id, to: b.id, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
       }
       walk(child);
     }
