@@ -485,10 +485,7 @@ async fn chat_complete(
     user: &str,
 ) -> MindmapResult<String> {
     let url = llm::chat_url(base_url);
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| MindmapError::Msg(format!("无法创建连接: {e}")))?;
+    let http = llm::http_client(Duration::from_secs(90)).map_err(MindmapError::Msg)?;
     let body = serde_json::json!({
         "model": model,
         "temperature": 0.2,
@@ -501,7 +498,10 @@ async fn chat_complete(
     if !key.is_empty() {
         req = req.bearer_auth(key);
     }
-    let resp = req.send().await.map_err(|e| MindmapError::Msg(format!("连不上语言模型: {e}")))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| MindmapError::Msg(format!("连不上语言模型: {}", llm::format_reqwest(e))))?;
     let status = resp.status();
     let text = resp.text().await.map_err(|e| MindmapError::Msg(format!("读取响应失败: {e}")))?;
     if status.as_u16() == 401 || status.as_u16() == 403 {

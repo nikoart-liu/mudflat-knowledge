@@ -196,6 +196,27 @@ pub fn models_url(base_url: &str) -> String {
     format!("{}/models", base_url.trim_end_matches('/'))
 }
 
+const USER_AGENT: &str = "mudflat-knowledge/0.1 (https://github.com/mudflat-knowledge)";
+
+pub fn http_client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| format!("无法创建连接: {e}"))
+}
+
+pub fn format_reqwest(err: reqwest::Error) -> String {
+    let mut s = err.to_string();
+    let mut src = std::error::Error::source(&err);
+    while let Some(e) = src {
+        s.push_str(" → ");
+        s.push_str(&e.to_string());
+        src = e.source();
+    }
+    s
+}
+
 pub fn normalize_draft(draft: &LlmDraft, existing_key: Option<&str>) -> LlmResult<Normalized> {
     if draft.provider == Provider::Off {
         return Ok(Normalized {
@@ -530,5 +551,21 @@ mod tests {
         let mode = fs::metadata(key_path(&dir)).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live OpenCode Go network"]
+    async fn opencode_go_chat_is_reachable_without_key() {
+        let http = http_client(std::time::Duration::from_secs(20)).unwrap();
+        let resp = http
+            .post("https://opencode.ai/zen/go/v1/chat/completions")
+            .json(&serde_json::json!({
+                "model": "deepseek-v4-flash",
+                "messages": [{ "role": "user", "content": "hi" }]
+            }))
+            .send()
+            .await
+            .expect("reqwest should reach OpenCode Go");
+        assert_eq!(resp.status().as_u16(), 401, "no key must be AuthError, not a transport failure");
     }
 }

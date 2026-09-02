@@ -128,15 +128,12 @@ async fn test_llm_connection(app: tauri::AppHandle, draft: llm::LlmDraft) -> Res
         .or(existing.as_deref())
         .unwrap_or("");
     let url = llm::models_url(&normalized.config.base_url);
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("无法创建连接: {e}"))?;
+    let http = llm::http_client(std::time::Duration::from_secs(15))?;
     let mut req = http.get(&url);
     if !key.is_empty() {
         req = req.bearer_auth(key);
     }
-    let resp = req.send().await.map_err(|e| format!("连不上供应商: {e}"))?;
+    let resp = req.send().await.map_err(|e| format!("连不上供应商: {}", llm::format_reqwest(e)))?;
     let status = resp.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err("API Key 无效或没有权限".into());
