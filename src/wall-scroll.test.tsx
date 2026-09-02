@@ -93,7 +93,7 @@ beforeEach(() => {
       case 'get_llm_settings':
         return { provider: 'off', baseUrl: '', model: '', hasKey: false };
       case 'get_mindmap_status':
-        return { available: false, providerOff: true, cardCount: 0, cached: null, stale: false };
+        return { available: false, providerOff: true, cardCount: 0, cached: null, stale: false, chatEndpoint: null, model: null };
       default:
         throw new Error(`测试未处理的命令: ${cmd}`);
     }

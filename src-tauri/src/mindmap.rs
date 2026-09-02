@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::db::{self, CardFilter, CardRow};
-use crate::llm::{self, Provider};
+use crate::llm;
 
 pub const PROMPT_VERSION: &str = "mindmap-theme-v1";
 const LABEL_MIN: usize = 8;
@@ -73,6 +73,11 @@ pub struct MindmapStatus {
     pub card_count: i64,
     pub cached: Option<Mindmap>,
     pub stale: bool,
+    /// 生成时会 POST 的地址；未启用时为空。
+    #[serde(default)]
+    pub chat_endpoint: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 pub fn input_hash(cards: &[CardRow]) -> String {
@@ -399,12 +404,15 @@ pub fn status_for(dir: &Path, book_id: i64, cards: &[CardRow], provider_off: boo
     let hash = input_hash(cards);
     let cached = load_cache(dir, book_id);
     let stale = cached.as_ref().map(|c| c.input_hash != hash).unwrap_or(false);
+    let runtime = llm::load_runtime(dir).ok();
     MindmapStatus {
         available: !provider_off && cards.len() >= MIN_EVIDENCE,
         provider_off,
         card_count: cards.len() as i64,
         cached,
         stale,
+        chat_endpoint: runtime.as_ref().map(|(cfg, _)| llm::chat_url(&cfg.base_url)),
+        model: runtime.as_ref().map(|(cfg, _)| cfg.model.clone()),
     }
 }
 
@@ -416,14 +424,7 @@ pub async fn generate(
     if cards.len() < MIN_EVIDENCE {
         return Err(MindmapError::Msg("至少两张卡片才能归纳脑图。".into()));
     }
-    let cfg = llm::load_config(dir).map_err(|e| MindmapError::Msg(e.to_string()))?;
-    if cfg.provider == Provider::Off {
-        return Err(MindmapError::Msg("还没有启用语言模型。到设置「四、语言模型」选择供应商。".into()));
-    }
-    let key = llm::get_key(dir).ok();
-    if cfg.provider != Provider::Ollama && key.as_deref().unwrap_or("").is_empty() {
-        return Err(MindmapError::Msg("还没有保存语言模型 API Key。".into()));
-    }
+    let (cfg, key) = llm::load_runtime(dir).map_err(|e| MindmapError::Msg(e.to_string()))?;
 
     let hash = input_hash(cards);
     let packed: Vec<String> = if cards.len() <= ONESHOT_LIMIT {
@@ -434,7 +435,7 @@ pub async fn generate(
     let raw = chat_complete(
         &cfg.base_url,
         &cfg.model,
-        key.as_deref().unwrap_or(""),
+        &key,
         system_prompt(),
         &user_prompt(&book.title, &packed),
     )
@@ -483,7 +484,7 @@ async fn chat_complete(
     system: &str,
     user: &str,
 ) -> MindmapResult<String> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let url = llm::chat_url(base_url);
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(90))
         .build()

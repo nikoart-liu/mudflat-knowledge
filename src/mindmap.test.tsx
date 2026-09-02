@@ -73,6 +73,36 @@ describe('MindmapView', () => {
     expect(callMock.mock.calls.some((c) => c[0] === 'generate_mindmap')).toBe(false);
   });
 
+  it('点生成线索会调用 generate_mindmap', async () => {
+    const generated = { ...map, inputHash: 'fresh' };
+    callMock.mockImplementation(async (cmd?: string) => {
+      if (!cmd || cmd === 'get_mindmap_status') {
+        return {
+          available: true, providerOff: false, cardCount: 4, cached: null, stale: false,
+          chatEndpoint: 'https://api.deepseek.com/v1/chat/completions', model: 'deepseek-chat',
+        };
+      }
+      if (cmd === 'generate_mindmap') return generated;
+      throw new Error(`未处理 ${cmd}`);
+    });
+    render(
+      <MindmapView
+        book={{ id: 1, title: '原子习惯' }}
+        cards={[card(8, '环境是无形的手。'), card(9, '把书放在沙发上。')]}
+        onToast={() => {}}
+        onExit={() => {}}
+        onOpenCard={() => {}}
+        onNeedSettings={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText(/POST https:\/\/api.deepseek.com\/v1\/chat\/completions/)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '生成线索' }));
+    await waitFor(() => {
+      expect(callMock.mock.calls.some((c) => c[0] === 'generate_mindmap')).toBe(true);
+    });
+    expect(await screen.findByRole('button', { name: /环境在替你做决定/ })).toBeTruthy();
+  });
+
   it('点击概要节点打开证据抽屉，不把划线铺成叶子', async () => {
     callMock.mockImplementation(async (cmd?: string) => {
       if (!cmd || cmd === 'get_mindmap_status') {

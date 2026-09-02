@@ -1538,6 +1538,7 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
   const [status, setStatus] = useState<MindmapStatus | null>(null);
   const [map, setMap] = useState<Mindmap | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const byId = useMemo(() => {
     const m = new Map<number, CardRow>();
@@ -1572,13 +1573,21 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
   }, [openId, onExit]);
 
   const generate = async () => {
+    if (busy) return;
+    if ((status?.cardCount ?? 0) < 2) {
+      setError('至少两张卡片才能归纳。先同步这本书，或再划两条。');
+      return;
+    }
     setBusy(true);
+    setError(null);
     try {
       const next = await call<Mindmap>('generate_mindmap', { bookId: book.id });
       setMap(next);
       setStatus((s) => s ? { ...s, cached: next, stale: false } : s);
     } catch (e) {
-      onToast(explainError(e));
+      const msg = explainError(e);
+      setError(msg);
+      onToast(msg);
     } finally {
       setBusy(false);
     }
@@ -1622,21 +1631,27 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
           <p className="review-hint">
             将发送本书 {status.cardCount} 张卡片的标题级文本，不会上传整库。画面上只有概要，点节点才看原文。
           </p>
+          {status.chatEndpoint && (
+            <p className="hint-mono">请求 {status.model ?? '模型'} · POST {status.chatEndpoint}</p>
+          )}
+          {error && <p className="err">{error}</p>}
           <div className="deck-done-actions">
-            <button className="primary" onClick={() => void generate()} disabled={busy || status.cardCount < 2}>
+            <button className="primary" onClick={() => void generate()} disabled={busy}>
               {busy ? '归纳中…' : '生成线索'}
             </button>
             <button className="ghost" onClick={onExit}>返回卡片墙</button>
           </div>
         </div>
       )}
+      {error && map && <p className="err">{error}</p>}
       {map && (
         <>
-          {status?.stale && (
-            <p className="hint">划线已变，图还是上次的。
-              <button className="link-btn" onClick={() => void generate()} disabled={busy}>更新</button>
-            </p>
-          )}
+          <p className="hint">
+            {status?.stale ? '划线已变，图还是上次的。' : ''}
+            <button className="link-btn" onClick={() => void generate()} disabled={busy}>
+              {busy ? '归纳中…' : (status?.stale ? '更新' : '重新生成')}
+            </button>
+          </p>
           <div className="mm-canvas">
             <div className="mm-root">{map.root.label}</div>
             <ul className="mm-level">
@@ -1963,7 +1978,8 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
                 ? 'Ollama 默认走本机 11434 端口，一般不用 Key。请先在本机运行对应模型。'
                 : llmProvider === 'custom'
                   ? '兼容 OpenAI 的 /v1 接口即可，例如 DeepSeek、硅基流动。非本机地址必须是 https。'
-                  : 'Key 只存在本机。测试连接会请求供应商的模型列表，不发送卡片正文。'}
+                  : 'Key 只存在本机。'}
+              {' '}测试连接只访问 GET /models，不会保存。生成线索走 POST /chat/completions，用的是点「保存到本机」之后的配置。
             </p>
           </>
         )}

@@ -142,5 +142,7 @@ export interface MindmapStatus {
   cardCount: number;
   cached: Mindmap | null;
   stale: boolean;
+  chatEndpoint?: string | null;
+  model?: string | null;
 }
 

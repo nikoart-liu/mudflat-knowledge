@@ -225,6 +225,26 @@ pub fn normalize_draft(draft: &LlmDraft, existing_key: Option<&str>) -> LlmResul
     })
 }
 
+/// 生成用的已保存配置。关闭或缺 Key 时给出和设置页一致的说明。
+pub fn load_runtime(dir: &Path) -> LlmResult<(LlmConfig, String)> {
+    let cfg = load_config(dir)?;
+    if cfg.provider == Provider::Off {
+        return Err(LlmError::Invalid(
+            "还没有启用语言模型。到设置「四、语言模型」选择供应商并保存。".into(),
+        ));
+    }
+    let key = match get_key(dir) {
+        Ok(k) => k,
+        Err(_) => String::new(),
+    };
+    require_key(cfg.provider, &cfg.base_url, &key)?;
+    Ok((cfg, key))
+}
+
+pub fn chat_url(base_url: &str) -> String {
+    format!("{}/chat/completions", base_url.trim_end_matches('/'))
+}
+
 fn resolve_base_url(provider: Provider, raw: &str) -> LlmResult<String> {
     let trimmed = raw.trim();
     let url = if trimmed.is_empty() {
@@ -458,6 +478,22 @@ mod tests {
             models_url("http://127.0.0.1:11434/v1"),
             "http://127.0.0.1:11434/v1/models"
         );
+        assert_eq!(
+            chat_url("https://api.deepseek.com/v1/"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn runtime_rejects_off_and_missing_key() {
+        let dir = temp_dir("runtime-off");
+        let err = load_runtime(&dir).unwrap_err();
+        assert!(err.to_string().contains("还没有启用"));
+        save(&dir, &draft(Provider::Openai, "", "gpt-4o-mini", "sk-abc"), None).unwrap();
+        let (cfg, key) = load_runtime(&dir).unwrap();
+        assert_eq!(cfg.provider, Provider::Openai);
+        assert_eq!(key, "sk-abc");
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
