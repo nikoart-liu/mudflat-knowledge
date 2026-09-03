@@ -441,14 +441,19 @@ fn get_mindmap_status(app: tauri::AppHandle, state: State<'_, Db>, book_id: i64)
 }
 
 #[tauri::command]
-async fn generate_mindmap(app: tauri::AppHandle, state: State<'_, Db>, book_id: i64) -> Result<mindmap::Mindmap, String> {
+async fn generate_mindmap(
+    app: tauri::AppHandle,
+    state: State<'_, Db>,
+    book_id: i64,
+    on_progress: tauri::ipc::Channel<mindmap::MindmapEvent>,
+) -> Result<mindmap::Mindmap, String> {
     let dir = data_dir(&app)?;
     let (book, cards) = {
         let conn = state.lock().map_err(|e| e.to_string())?;
         mindmap::load_book_cards(&conn, book_id)
             .map_err(|_| "找不到这本书，或还没有卡片。".to_string())?
     };
-    mindmap::generate(&dir, &book, &cards).await.map_err(|e| e.to_string())
+    mindmap::generate(&dir, &book, &cards, on_progress).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

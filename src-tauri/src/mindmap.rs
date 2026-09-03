@@ -1,4 +1,4 @@
-//! 按书划线生成概要脑图：模型只输出主题节点，划线挂在 source_card_ids 上。
+//! 按书划线生成线索：模型只输出概要节点，划线挂在 source_card_ids 上。
 //! 校验/清洗是纯函数，生成失败不得把单卡画成叶子。
 
 use std::collections::{HashMap, HashSet};
@@ -6,11 +6,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Channel;
 
 use crate::db::{self, CardFilter, CardRow};
 use crate::llm;
 
-pub const PROMPT_VERSION: &str = "mindmap-theme-v1";
+pub const PROMPT_VERSION: &str = "mindmap-theme-v3";
 const LABEL_MIN: usize = 8;
 const LABEL_MAX: usize = 24;
 const SUMMARY_MAX: usize = 40;
@@ -18,7 +19,10 @@ const MAX_TOP: usize = 12;
 const MAX_SECONDARY: usize = 3;
 const MIN_EVIDENCE: usize = 2;
 const CARD_LINE_CHARS: usize = 72;
-const ONESHOT_LIMIT: usize = 40;
+const SMALL_MAX: usize = 80;
+const MEDIUM_MAX: usize = 400;
+const SHORT_QUOTE: usize = 12;
+const CLUSTER_PREFIX: usize = 16;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MindmapError {
@@ -78,6 +82,26 @@ pub struct MindmapStatus {
     pub chat_endpoint: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MindmapEvent {
+    pub stage: String,
+    pub current: i64,
+    pub total: i64,
+    pub title: String,
+    pub message: String,
+}
+
+fn emit(chan: &Channel<MindmapEvent>, stage: &str, current: i64, total: i64, title: &str, message: &str) {
+    let _ = chan.send(MindmapEvent {
+        stage: stage.into(),
+        current,
+        total,
+        title: title.into(),
+        message: message.into(),
+    });
 }
 
 pub fn input_hash(cards: &[CardRow]) -> String {
@@ -170,7 +194,7 @@ pub fn sanitize(
     let unplaced: HashSet<i64> = allowed.difference(&assigned).copied().collect();
 
     if tree.root.children.is_empty() {
-        return Err(MindmapError::Msg("没有得到可用的概要节点。请重试，或换一个模型。".into()));
+        return Err(empty_clue_error(&warnings));
     }
 
     let chapters = cards
@@ -247,20 +271,68 @@ fn sanitize_themes(
         }
         n.source_card_ids = ids;
         if n.source_card_ids.len() < MIN_EVIDENCE {
+            let name = warn_label(&n.label);
+            if n.source_card_ids.is_empty() {
+                warnings.push(format!("丢掉「{name}」：没有有效证据卡号"));
+            } else {
+                warnings.push(format!(
+                    "丢掉「{name}」：只有 {} 张证据，至少要 2 张",
+                    n.source_card_ids.len()
+                ));
+            }
             continue;
         }
         let label_len = char_len(&n.label);
         if label_len < LABEL_MIN || label_len > LABEL_MAX {
-            warnings.push(format!("丢掉标题长度不合规的节点「{}」", n.label));
+            warnings.push(format!("丢掉标题长度不合规的节点「{}」", warn_label(&n.label)));
             continue;
         }
         if is_excerpt(&n.label, &n.source_card_ids, by_id) {
-            warnings.push(format!("丢掉原文截断节点「{}」", n.label));
+            warnings.push(format!("丢掉原文截断节点「{}」", warn_label(&n.label)));
             continue;
         }
         out.push(n);
     }
     out
+}
+
+fn warn_label(s: &str) -> String {
+    let t = s.trim();
+    if char_len(t) <= LABEL_MAX {
+        t.to_string()
+    } else {
+        format!("{}…", prefix_chars(t, LABEL_MAX))
+    }
+}
+
+fn empty_clue_error(warnings: &[String]) -> MindmapError {
+    const HEAD: &str = "没有得到可用的概要节点。";
+    const TAIL: &str = "请重试，或换一个模型。";
+    if warnings.is_empty() {
+        return MindmapError::Msg(format!("{HEAD}{TAIL}"));
+    }
+    let mut seen = HashSet::new();
+    let mut reasons: Vec<&str> = Vec::new();
+    for w in warnings {
+        let t = w.trim();
+        if t.is_empty() || !seen.insert(t) {
+            continue;
+        }
+        reasons.push(t);
+        if reasons.len() == 8 {
+            break;
+        }
+    }
+    let unique_n = {
+        let mut all = HashSet::new();
+        warnings.iter().map(|w| w.trim()).filter(|t| !t.is_empty()).filter(|t| all.insert(*t)).count()
+    };
+    let extra = unique_n.saturating_sub(reasons.len());
+    let mut body = reasons.join("\n");
+    if extra > 0 {
+        body.push_str(&format!("\n…另有 {extra} 条"));
+    }
+    MindmapError::Msg(format!("{HEAD}\n{body}\n{TAIL}"))
 }
 
 fn is_excerpt(label: &str, ids: &[i64], by_id: &HashMap<i64, &CardRow>) -> bool {
@@ -307,24 +379,82 @@ fn count_themes(n: &MindmapNode) -> usize {
 }
 
 pub fn system_prompt() -> &'static str {
-    "你是编辑，不是作者。只根据用户提供的划线/想法归纳一张主题脑图。\n\
+    "你是编辑，不是作者。只根据用户提供的划线、想法与批注，归纳这本书的「线索」：一张可扫的概要节点图。读者应能不打开证据就看懂自己划过哪几条主线。工作只有三件：聚类、写概要、挂证据。\n\
+\n\
+只输出一个 JSON 对象，不要 Markdown、不要前言。形状：\n\
+{\"root\":{\"id\":\"root\",\"kind\":\"book\",\"label\":\"书名\",\"children\":[{\"id\":\"t1\",\"kind\":\"theme\",\"label\":\"8到24字归纳句\",\"summary\":\"可选，不超过40字\",\"sourceCardIds\":[12,18],\"children\":[]}]}}\n\
+\n\
 规则：\n\
-1. 输出一个 JSON 对象，不要 Markdown。字段：root（节点）。\n\
-2. 节点 kind 只能是 book 或 theme。禁止 kind=card。划线只能出现在 sourceCardIds。\n\
-3. 根节点 kind=book，children 是 一级主题（5 到 12 个，卡少则可更少）。\n\
-4. 每个 theme 的 label 是 8 到 24 个字的归纳句，不是摘录截断，不能与任何划线原文前 24 字相同。\n\
-5. 每个 theme 至少 2 个 sourceCardIds（整数，来自输入的 #id）。\n\
-6. 一级下最多 3 个二级 theme；不要第三层。\n\
-7. 没出现的论点不要补。同义合并，冲突保留为两个主题或一个一级下的两个二级。\n\
-8. summary 可选，不超过 40 字。"
+1. 节点 kind 只能是 book 或 theme。禁止 kind=card。划线、想法只出现在 sourceCardIds，不进树。\n\
+2. 根节点 kind=book。children 是一级概要：默认 5 到 12 个；卡少可以更少，但一条划线不能独占一个一级。\n\
+3. 一级是扫读主线（跨章同义要合并）。二级可选，每枝最多 3 个，只放子题或分歧。不要第三层。\n\
+4. label 必须是 8 到 24 个字的归纳句，不是摘录截断，也不能把「注:」原文贴上去。不得与任何证据正文或批注的前 24 字相同。\n\
+5. 每个 theme 至少 2 个 sourceCardIds（整数，来自输入的 #id）。只能用输入里出现过的 id；不要发明卡号。若一行含「同簇 #id」，这些 id 与代表卡同属一簇，必须全部写入该主题的 sourceCardIds。\n\
+6. summary 可选，不超过 40 字，必须能被该节点的证据支持。\n\
+7. 没出现的论点不要补。不要写作者生平、全书主旨、豆瓣评价或任何库外知识。资料不够就画浅。\n\
+8. 同一观点的多条划线合成一个节点。相互冲突的划线分成两个一级，或在同一一级下加两个二级，不要抹平。\n\
+9. [星]、[想法]、有「注:」的卡提高成为主题中心和命名的权重，但节点文案仍是归纳。过短金句并入最近主题当证据，不单独占一个概要。"
 }
 
 pub fn user_prompt(title: &str, lines: &[String]) -> String {
+    user_prompt_counted(title, lines, lines.len())
+}
+
+fn user_prompt_counted(title: &str, lines: &[String], source_n: usize) -> String {
+    let compressed = if lines.len() < source_n {
+        format!("这是 {source_n} 条里压缩后的 {} 簇；「同簇」id 必须全部挂上。\n", lines.len())
+    } else {
+        String::new()
+    };
     format!(
-        "书名：{title}\n共 {} 条用户划线/想法。请压缩成主题脑图。\n\n{}",
+        "书名：{title}\n\
+共 {} 条（不是全书）。\n\
+{compressed}行格式：#id [章:章名] [划线|想法|自建] [星] 正文 | 注:批注 | 同簇 #id,#id\n\
+只根据这些行归纳线索。请输出 JSON。\n\n{}",
         lines.len(),
         lines.join("\n")
     )
+}
+
+fn chapter_system_prompt() -> &'static str {
+    "你是编辑。只根据这一章的划线归纳 2 到 5 个概要节点。不要写其他章，不要补没出现的论点。\n\
+只输出 JSON：{\"root\":{\"kind\":\"book\",\"children\":[{\"kind\":\"theme\",\"label\":\"8到24字归纳句\",\"sourceCardIds\":[1,2],\"children\":[]}]}}\n\
+禁止 kind=card。每个 theme 至少 2 个 sourceCardIds。有「同簇」的 id 全部挂上。"
+}
+
+fn chapter_user_prompt(book: &str, chapter: &str, lines: &[String]) -> String {
+    format!(
+        "书名：{book}\n本章：{chapter}\n共 {} 条。请归纳本章线索。请输出 JSON。\n\n{}",
+        lines.len(),
+        lines.join("\n")
+    )
+}
+
+fn merge_system_prompt() -> &'static str {
+    "你是编辑。下面是各章已经归纳好的概要，不是划线原文。把它们合并成全书线索：5 到 12 个一级主题。跨章同义合并，分歧保留。\n\
+只输出 JSON：{\"root\":{\"kind\":\"book\",\"children\":[{...}]}}\n\
+每个 theme 的 sourceCardIds 必须是下列卡号的并集，不要丢 id，不要发明 id，不要把卡号变成树节点。二级每枝最多 3 个。"
+}
+
+fn merge_user_prompt(title: &str, chapters: &[(String, Vec<MindmapNode>)]) -> String {
+    let mut body = String::new();
+    for (ch, themes) in chapters {
+        body.push_str(&format!("## 章：{ch}\n"));
+        for t in themes {
+            let ids: Vec<String> = t.source_card_ids.iter().map(|id| id.to_string()).collect();
+            body.push_str(&format!("- {} | 卡: {}\n", t.label, ids.join(",")));
+            if let Some(s) = &t.summary {
+                if !s.is_empty() {
+                    body.push_str(&format!("  概要：{s}\n"));
+                }
+            }
+            for c in &t.children {
+                let cids: Vec<String> = c.source_card_ids.iter().map(|id| id.to_string()).collect();
+                body.push_str(&format!("  - {} | 卡: {}\n", c.label, cids.join(",")));
+            }
+        }
+    }
+    format!("书名：{title}\n请合并成全书线索。请输出 JSON。\n\n{body}")
 }
 
 pub fn parse_model_json(raw: &str) -> MindmapResult<Mindmap> {
@@ -463,46 +593,348 @@ pub async fn generate(
     dir: &Path,
     book: &db::BookRow,
     cards: &[CardRow],
+    on_progress: Channel<MindmapEvent>,
 ) -> MindmapResult<Mindmap> {
     if cards.len() < MIN_EVIDENCE {
-        return Err(MindmapError::Msg("至少两张卡片才能归纳脑图。".into()));
+        return Err(MindmapError::Msg("至少两张卡片才能归纳线索。".into()));
     }
     let (cfg, key) = llm::load_runtime(dir).map_err(|e| MindmapError::Msg(e.to_string()))?;
 
     let hash = input_hash(cards);
-    let packed = pack_for_prompt(cards);
-    let raw = chat_complete(
-        &cfg.base_url,
-        &cfg.model,
-        &key,
-        system_prompt(),
-        &user_prompt(&book.title, &packed),
-    )
-    .await?;
-    let parsed = parse_model_json(&raw)?;
+    let plan = plan_clue(cards);
+    let (steps, plan_msg) = plan_progress(&plan, cards.len());
+    emit(&on_progress, "start", 0, steps, "", &plan_msg);
+    let mut parsed = match &plan {
+        CluePlan::OneShot { lines, clusters } => {
+            emit(&on_progress, "oneshot", 1, steps, "", &format!("{} 张", cards.len()));
+            let raw = chat_complete(
+                &cfg.base_url,
+                &cfg.model,
+                &key,
+                system_prompt(),
+                &user_prompt_counted(&book.title, lines, cards.len()),
+                Some((&on_progress, 1, steps)),
+            )
+            .await?;
+            let mut tree = parse_model_json(&raw)?;
+            expand_clusters(&mut tree, clusters);
+            tree
+        }
+        CluePlan::ByChapter { chapters } => {
+            generate_by_chapter(&cfg.base_url, &cfg.model, &key, &book.title, chapters, &on_progress, steps).await?
+        }
+    };
+    parsed.warnings.retain(|w| !w.is_empty());
+    emit(&on_progress, "sanitize", steps, steps, "", "");
     let clean = sanitize(parsed, cards, book.id, &book.title, &hash)?;
     save_cache(dir, &clean)?;
+    emit(&on_progress, "done", steps, steps, "", "");
     Ok(clean)
 }
 
+struct ChapterPack {
+    title: String,
+    lines: Vec<String>,
+    clusters: Vec<Vec<i64>>,
+}
+
+enum CluePlan {
+    OneShot { lines: Vec<String>, clusters: Vec<Vec<i64>> },
+    ByChapter { chapters: Vec<ChapterPack> },
+}
+
 fn pack_for_prompt(cards: &[CardRow]) -> Vec<String> {
-    // 一次请求只送高权重的一小撮，避免 OpenCode Go 把整书 POST 拖过超时。
-    let mut scored: Vec<(i32, &CardRow)> = cards
-        .iter()
-        .map(|c| {
-            let mut s = 0;
-            if c.starred { s += 4; }
-            if c.kind == "thought" { s += 3; }
-            if !c.note.trim().is_empty() { s += 2; }
-            (s, c)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
-    scored
+    let mut ordered: Vec<&CardRow> = cards.iter().collect();
+    ordered.sort_by_key(|c| chapter_sort_key(c));
+    ordered.iter().map(|c| pack_card_line(c)).collect()
+}
+
+fn chapter_sort_key(c: &CardRow) -> (i64, i64, i64) {
+    (c.chapter_uid.unwrap_or(i64::MAX), c.created_at, c.id)
+}
+
+fn card_weight(c: &CardRow) -> i32 {
+    let mut s = 0;
+    if c.starred { s += 4; }
+    if c.kind == "thought" { s += 3; }
+    if !c.note.trim().is_empty() { s += 2; }
+    s
+}
+
+fn cluster_key(c: &CardRow) -> String {
+    normalize_cmp(&prefix_chars(c.text.trim(), CLUSTER_PREFIX))
+}
+
+fn pick_rep<'a>(cluster: &[&'a CardRow]) -> &'a CardRow {
+    cluster.iter().copied().max_by(|a, b| {
+        card_weight(a).cmp(&card_weight(b))
+            .then_with(|| char_len(&a.text).cmp(&char_len(&b.text)))
+            .then_with(|| a.id.cmp(&b.id))
+    }).unwrap_or(cluster[0])
+}
+
+fn pack_cluster_line(cluster: &[&CardRow]) -> String {
+    let rep = pick_rep(cluster);
+    let mut line = pack_card_line(rep);
+    if cluster.len() > 1 {
+        let rest: Vec<String> = cluster.iter().filter(|c| c.id != rep.id).map(|c| format!("#{}", c.id)).collect();
+        line.push_str(" | 同簇 ");
+        line.push_str(&rest.join(","));
+    }
+    line
+}
+
+fn cluster_in_order<'a>(cards: &[&'a CardRow]) -> Vec<Vec<&'a CardRow>> {
+    let mut clusters: Vec<Vec<&CardRow>> = Vec::new();
+    for c in cards {
+        let short = char_len(c.text.trim()) < SHORT_QUOTE;
+        let key = cluster_key(c);
+        if let Some(last) = clusters.last_mut() {
+            let last_key = cluster_key(pick_rep(last));
+            if short || (!key.is_empty() && !last_key.is_empty() && key == last_key) {
+                last.push(c);
+                continue;
+            }
+        }
+        clusters.push(vec![c]);
+    }
+    clusters
+}
+
+fn group_by_chapter(cards: &[CardRow]) -> Vec<(String, Vec<&CardRow>)> {
+    let mut ordered: Vec<&CardRow> = cards.iter().collect();
+    ordered.sort_by_key(|c| chapter_sort_key(c));
+    let mut groups: Vec<(String, Vec<&CardRow>)> = Vec::new();
+    for c in ordered {
+        let title = c.chapter_title.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("未分章");
+        if let Some((prev, list)) = groups.last_mut() {
+            if prev == title {
+                list.push(c);
+                continue;
+            }
+        }
+        groups.push((title.to_string(), vec![c]));
+    }
+    groups
+}
+
+fn packs_by_chapter(cards: &[CardRow], cluster: bool) -> Vec<ChapterPack> {
+    group_by_chapter(cards)
         .into_iter()
-        .take(ONESHOT_LIMIT)
-        .map(|(_, c)| pack_card_line(c))
+        .map(|(title, group)| {
+            let clusters = if cluster {
+                cluster_in_order(&group)
+            } else {
+                group.iter().map(|c| vec![*c]).collect()
+            };
+            let lines = clusters.iter().map(|cl| pack_cluster_line(cl)).collect();
+            let cluster_ids = clusters.iter().map(|cl| cl.iter().map(|c| c.id).collect()).collect();
+            ChapterPack { title, lines, clusters: cluster_ids }
+        })
         .collect()
+}
+
+fn singletons(cards: &[CardRow]) -> Vec<Vec<i64>> {
+    cards.iter().map(|c| vec![c.id]).collect()
+}
+
+fn plan_clue(cards: &[CardRow]) -> CluePlan {
+    let n = cards.len();
+    if n <= SMALL_MAX {
+        return CluePlan::OneShot {
+            lines: pack_for_prompt(cards),
+            clusters: singletons(cards),
+        };
+    }
+    if n <= MEDIUM_MAX {
+        return CluePlan::ByChapter { chapters: packs_by_chapter(cards, false) };
+    }
+    let chapters = packs_by_chapter(cards, true);
+    let total: usize = chapters.iter().map(|c| c.lines.len()).sum();
+    if total <= SMALL_MAX {
+        let mut lines = Vec::new();
+        let mut clusters = Vec::new();
+        for ch in chapters {
+            lines.extend(ch.lines);
+            clusters.extend(ch.clusters);
+        }
+        CluePlan::OneShot { lines, clusters }
+    } else {
+        CluePlan::ByChapter { chapters }
+    }
+}
+
+fn expand_clusters(tree: &mut Mindmap, clusters: &[Vec<i64>]) {
+    let mut by_member: HashMap<i64, &[i64]> = HashMap::new();
+    for cl in clusters {
+        for id in cl {
+            by_member.insert(*id, cl.as_slice());
+        }
+    }
+    fn walk(n: &mut MindmapNode, by_member: &HashMap<i64, &[i64]>) {
+        let mut extra = Vec::new();
+        for id in &n.source_card_ids {
+            if let Some(cl) = by_member.get(id) {
+                extra.extend(cl.iter().copied());
+            }
+        }
+        for id in extra {
+            if !n.source_card_ids.contains(&id) {
+                n.source_card_ids.push(id);
+            }
+        }
+        for c in &mut n.children {
+            walk(c, by_member);
+        }
+    }
+    walk(&mut tree.root, &by_member);
+}
+
+fn empty_tree(warnings: Vec<String>) -> Mindmap {
+    Mindmap {
+        book_id: 0,
+        title: String::new(),
+        mode: "theme".into(),
+        input_hash: String::new(),
+        prompt_version: PROMPT_VERSION.into(),
+        stats: MindmapStats { cards: 0, chapters: 0, themes: 0, unplaced: 0 },
+        root: MindmapNode {
+            id: "root".into(),
+            label: String::new(),
+            kind: "book".into(),
+            summary: None,
+            source_card_ids: vec![],
+            children: vec![],
+        },
+        warnings,
+    }
+}
+
+fn chapter_card_count(ch: &ChapterPack) -> usize {
+    ch.clusters.iter().map(|c| c.len()).sum()
+}
+
+fn plan_progress(plan: &CluePlan, card_n: usize) -> (i64, String) {
+    match plan {
+        CluePlan::OneShot { .. } => (1, format!("{card_n} 张卡片，全书一次归纳")),
+        CluePlan::ByChapter { chapters } => {
+            let n = chapters.iter().filter(|ch| chapter_card_count(ch) >= MIN_EVIDENCE).count() as i64;
+            let steps = if n > 1 { n + 1 } else { n };
+            (steps, format!("{card_n} 张卡片，按 {n} 章归纳"))
+        }
+    }
+}
+
+async fn generate_by_chapter(
+    base_url: &str,
+    model: &str,
+    key: &str,
+    book_title: &str,
+    chapters: &[ChapterPack],
+    on_progress: &Channel<MindmapEvent>,
+    total_steps: i64,
+) -> MindmapResult<Mindmap> {
+    let mut outlines: Vec<(String, Vec<MindmapNode>)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut all_clusters: Vec<Vec<i64>> = Vec::new();
+    let mut current = 0i64;
+    for ch in chapters {
+        all_clusters.extend(ch.clusters.iter().cloned());
+        if chapter_card_count(ch) < MIN_EVIDENCE {
+            emit(on_progress, "chapter_skip", current, total_steps, &ch.title, "");
+            warnings.push(format!("「{}」卡片不足，跳过", ch.title));
+            continue;
+        }
+        current += 1;
+        emit(on_progress, "chapter", current, total_steps, &ch.title, "");
+        match chat_complete(
+            base_url,
+            model,
+            key,
+            chapter_system_prompt(),
+            &chapter_user_prompt(book_title, &ch.title, &ch.lines),
+            Some((on_progress, current, total_steps)),
+        )
+        .await
+        {
+            Ok(raw) => match parse_model_json(&raw) {
+                Ok(mut tree) => {
+                    expand_clusters(&mut tree, &ch.clusters);
+                    if tree.root.children.is_empty() {
+                        let msg = "没有可用概要";
+                        emit(on_progress, "chapter_failed", current, total_steps, &ch.title, msg);
+                        warnings.push(format!("「{}」{msg}", ch.title));
+                    } else {
+                        emit(on_progress, "chapter_ok", current, total_steps, &ch.title, "");
+                        outlines.push((ch.title.clone(), tree.root.children));
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("结果无法解析：{e}");
+                    emit(on_progress, "chapter_failed", current, total_steps, &ch.title, &msg);
+                    warnings.push(format!("「{}」归纳结果无法解析：{e}", ch.title));
+                }
+            },
+            Err(e) => {
+                let msg = e.to_string();
+                emit(on_progress, "chapter_failed", current, total_steps, &ch.title, &msg);
+                warnings.push(format!("「{}」归纳失败：{msg}", ch.title));
+            }
+        }
+    }
+    if outlines.is_empty() {
+        return Err(empty_clue_error(&warnings));
+    }
+    let mut tree = if outlines.len() == 1 {
+        let mut t = empty_tree(warnings);
+        t.root.children = outlines.pop().map(|(_, ch)| ch).unwrap_or_default();
+        t
+    } else {
+        current += 1;
+        emit(on_progress, "merge", current, total_steps, "", "");
+        match chat_complete(
+            base_url,
+            model,
+            key,
+            merge_system_prompt(),
+            &merge_user_prompt(book_title, &outlines),
+            Some((on_progress, current, total_steps)),
+        )
+        .await
+        {
+            Ok(raw) => match parse_model_json(&raw) {
+                Ok(mut merged) => {
+                    expand_clusters(&mut merged, &all_clusters);
+                    merged.warnings.extend(warnings);
+                    merged
+                }
+                Err(_) => {
+                    emit(on_progress, "chapter_failed", current, total_steps, "全书合并", "暂按各章概要并列");
+                    warnings.push("全书合并失败，暂按各章概要并列。".into());
+                    flatten_chapters(outlines, warnings)
+                }
+            },
+            Err(_) => {
+                emit(on_progress, "chapter_failed", current, total_steps, "全书合并", "暂按各章概要并列");
+                warnings.push("全书合并失败，暂按各章概要并列。".into());
+                flatten_chapters(outlines, warnings)
+            }
+        }
+    };
+    expand_clusters(&mut tree, &all_clusters);
+    Ok(tree)
+}
+
+fn flatten_chapters(outlines: Vec<(String, Vec<MindmapNode>)>, warnings: Vec<String>) -> Mindmap {
+    let mut tree = empty_tree(warnings);
+    for (_, mut themes) in outlines {
+        tree.root.children.append(&mut themes);
+        if tree.root.children.len() >= MAX_TOP {
+            tree.root.children.truncate(MAX_TOP);
+            break;
+        }
+    }
+    tree
 }
 
 async fn chat_complete(
@@ -511,6 +943,7 @@ async fn chat_complete(
     key: &str,
     system: &str,
     user: &str,
+    progress: Option<(&Channel<MindmapEvent>, i64, i64)>,
 ) -> MindmapResult<String> {
     let url = llm::chat_url(base_url);
     let http = llm::http_client(Duration::from_secs(180)).map_err(MindmapError::Msg)?;
@@ -543,6 +976,9 @@ async fn chat_complete(
                 last_err = Some(detail);
                 if !transient || attempt == 2 {
                     break;
+                }
+                if let Some((chan, cur, tot)) = progress {
+                    emit(chan, "retry", cur, tot, "", &format!("连接不稳，第 {} 次尝试…", attempt + 2));
                 }
                 tokio::time::sleep(Duration::from_millis(400 * (attempt as u64 + 1))).await;
             }
@@ -705,6 +1141,52 @@ mod tests {
     }
 
     #[test]
+    fn empty_after_sanitize_names_drop_reasons() {
+        let cards = sample_cards();
+        let tree = raw_tree(vec![
+            theme("one", "单独一条不能成题啊", &[4], vec![]),
+            theme("excerpt", "人不是拥有习惯，而是由习惯塑造。", &[1, 2], vec![]),
+            theme("ghost", "库外节点必须丢掉啊", &[999, 998], vec![]),
+        ]);
+        let err = sanitize(tree, &cards, 1, "原子习惯", "h").unwrap_err().to_string();
+        assert!(err.starts_with("没有得到可用的概要节点。"));
+        assert!(err.contains("丢掉「单独一条不能成题啊」：只有 1 张证据，至少要 2 张"));
+        assert!(err.contains("丢掉原文截断节点「人不是拥有习惯，而是由习惯塑造。」"));
+        assert!(err.contains("丢掉「库外节点必须丢掉啊」：没有有效证据卡号"));
+        assert!(err.contains("请重试，或换一个模型。"));
+    }
+
+    #[test]
+    fn empty_model_children_keeps_fallback_line() {
+        let err = sanitize(raw_tree(vec![]), &sample_cards(), 1, "原子习惯", "h")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "没有得到可用的概要节点。请重试，或换一个模型。");
+    }
+
+    #[test]
+    fn system_prompt_states_sanitize_invariants() {
+        let p = system_prompt();
+        assert!(p.contains("线索"));
+        assert!(p.contains("sourceCardIds"));
+        assert!(p.contains("禁止 kind=card"));
+        assert!(p.contains("8 到 24"));
+        assert!(p.contains("至少 2 个"));
+        assert!(p.contains("不要第三层"));
+        assert!(p.contains("没出现的论点不要补"));
+        assert!(!p.contains("AI 思维导图"));
+    }
+
+    #[test]
+    fn user_prompt_explains_input_lines() {
+        let p = user_prompt("原子习惯", &["#1 [章:复利] [划线] [星] 人由习惯塑造。".into()]);
+        assert!(p.contains("书名：原子习惯"));
+        assert!(p.contains("#id"));
+        assert!(p.contains("请输出 JSON"));
+        assert!(!p.contains("主题脑图"));
+    }
+
+    #[test]
     fn pack_line_includes_id_chapter_and_note() {
         let c = card(7, "如何建立习惯", "highlight", "早饭后立刻写。", "我试过早饭后立刻写 20 分钟", true);
         let line = pack_card_line(&c);
@@ -715,12 +1197,128 @@ mod tests {
     }
 
     #[test]
-    fn pack_for_prompt_caps_at_oneshot_limit() {
+    fn pack_for_prompt_keeps_every_card() {
         let cards: Vec<CardRow> = (1..=50)
             .map(|i| card(i, "章", "highlight", "一段用来凑数的划线原文。", "", false))
             .collect();
         let packed = pack_for_prompt(&cards);
-        assert_eq!(packed.len(), ONESHOT_LIMIT);
+        assert_eq!(packed.len(), 50);
+        assert!(packed[0].contains("#1"));
+        assert!(packed[49].contains("#50"));
+    }
+
+    fn n_cards(n: usize) -> Vec<CardRow> {
+        (1..=n as i64)
+            .map(|i| {
+                let ch = ((i - 1) % 5) + 1;
+                let mut c = card(
+                    i,
+                    &format!("第{ch}章"),
+                    "highlight",
+                    &format!("这是第{i}条足够长的划线原文用来归纳主题。"),
+                    "",
+                    false,
+                );
+                c.chapter_uid = Some(ch);
+                c
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plan_oneshot_includes_all_eighty() {
+        match plan_clue(&n_cards(80)) {
+            CluePlan::OneShot { lines, .. } => assert_eq!(lines.len(), 80),
+            CluePlan::ByChapter { .. } => panic!("80 张应一次归纳"),
+        }
+    }
+
+    #[test]
+    fn plan_eighty_one_goes_by_chapter_and_keeps_every_card() {
+        match plan_clue(&n_cards(81)) {
+            CluePlan::ByChapter { chapters } => {
+                assert_eq!(chapters.len(), 5);
+                let n: usize = chapters.iter().map(|c| c.lines.len()).sum();
+                assert_eq!(n, 81);
+            }
+            CluePlan::OneShot { .. } => panic!("81 张应按章归纳"),
+        }
+    }
+
+    #[test]
+    fn plan_progress_oneshot_is_one_step() {
+        let (steps, msg) = plan_progress(&plan_clue(&n_cards(80)), 80);
+        assert_eq!(steps, 1);
+        assert_eq!(msg, "80 张卡片，全书一次归纳");
+    }
+
+    #[test]
+    fn plan_progress_by_chapter_counts_eligible_plus_merge() {
+        let (steps, msg) = plan_progress(&plan_clue(&n_cards(81)), 81);
+        assert_eq!(steps, 6);
+        assert_eq!(msg, "81 张卡片，按 5 章归纳");
+    }
+
+    #[test]
+    fn plan_large_near_dupes_compresses_before_oneshot() {
+        let cards: Vec<CardRow> = (1..=401)
+            .map(|i| {
+                let mut c = card(i, "环境", "highlight", "环境是无形的手在替你做决定。", "", i == 1);
+                c.chapter_uid = Some(1);
+                c
+            })
+            .collect();
+        match plan_clue(&cards) {
+            CluePlan::OneShot { lines, clusters } => {
+                assert_eq!(lines.len(), 1);
+                assert_eq!(clusters[0].len(), 401);
+                assert!(lines[0].contains("同簇"));
+            }
+            CluePlan::ByChapter { .. } => panic!("近重复大书应压成一簇"),
+        }
+    }
+
+    #[test]
+    fn plan_large_unique_keeps_every_card_by_chapter() {
+        match plan_clue(&n_cards(401)) {
+            CluePlan::ByChapter { chapters } => {
+                let n: usize = chapters.iter().map(|c| c.lines.len()).sum();
+                assert_eq!(n, 401);
+            }
+            CluePlan::OneShot { .. } => panic!("互不重复的 401 张应按章送，不得丢掉"),
+        }
+    }
+
+    #[test]
+    fn short_quotes_join_previous_cluster() {
+        let a = card(1, "环境", "highlight", "环境是无形的手在替你做决定。", "", false);
+        let b = card(2, "环境", "highlight", "金句。", "", false);
+        let c = card(3, "环境", "highlight", "把遥控器藏起来才读得进书。", "", false);
+        let refs = vec![&a, &b, &c];
+        let clusters = cluster_in_order(&refs);
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].iter().map(|x| x.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(clusters[1][0].id, 3);
+    }
+
+    #[test]
+    fn expand_clusters_fills_in_mates() {
+        let mut tree = raw_tree(vec![theme("env", "环境在替你做决定", &[8], vec![])]);
+        expand_clusters(&mut tree, &[vec![8, 9, 10]]);
+        let mut ids = tree.root.children[0].source_card_ids.clone();
+        ids.sort();
+        assert_eq!(ids, vec![8, 9, 10]);
+    }
+
+    #[test]
+    fn merge_prompt_keeps_chapter_titles_and_ids() {
+        let p = merge_user_prompt("原子习惯", &[
+            ("环境".into(), vec![theme("a", "环境在替你做决定", &[8, 9], vec![])]),
+            ("身份".into(), vec![theme("b", "身份由重复塑造", &[1, 2], vec![])]),
+        ]);
+        assert!(p.contains("章：环境"));
+        assert!(p.contains("8,9"));
+        assert!(p.contains("身份由重复塑造"));
     }
 
     #[test]

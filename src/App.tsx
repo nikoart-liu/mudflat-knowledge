@@ -11,6 +11,7 @@ import {
   type LlmProvider,
   type LlmSettings,
   type Mindmap,
+  type MindmapEventPayload,
   type MindmapNode,
   type MindmapStatus,
   type ReviewSettings,
@@ -20,9 +21,11 @@ import {
   type SyncEventPayload,
   type SyncSummary,
   type TagRow,
+  type ClueTask,
 } from './types';
 import './App.css';
-import { layoutMindmap, visibleClue } from './mindmap-layout';
+import { exportClueOutline, layoutMindmap, visibleClue } from './mindmap-layout';
+import { formatClueElapsed, formatClueProgress } from './clue-progress';
 
 type CardsView = { name: 'cards'; bookId: number | null };
 type View = CardsView | { name: 'review'; bookId: number | null } | { name: 'mindmap'; bookId: number } | { name: 'settings' };
@@ -224,6 +227,130 @@ export default function App() {
     setDueCount(due);
     setSetup(status);
   }, []);
+
+  const [clueTasks, setClueTasks] = useState<Map<number, ClueTask>>(new Map());
+  const clueTimersRef = useRef<Map<number, number>>(new Map());
+
+  useEffect(() => {
+    return () => {
+      for (const t of clueTimersRef.current.values()) {
+        window.clearInterval(t);
+      }
+      clueTimersRef.current.clear();
+    };
+  }, []);
+
+  const startGenerateClue = useCallback(async (book: { id: number; title: string }) => {
+    const existing = clueTasks.get(book.id);
+    if (existing?.busy) return;
+
+    const oldTimer = clueTimersRef.current.get(book.id);
+    if (oldTimer) {
+      window.clearInterval(oldTimer);
+      clueTimersRef.current.delete(book.id);
+    }
+
+    const started = Date.now();
+    const tick = window.setInterval(() => {
+      const sec = Math.floor((Date.now() - started) / 1000);
+      setClueTasks((prev) => {
+        const cur = prev.get(book.id);
+        if (!cur || !cur.busy) return prev;
+        const next = new Map(prev);
+        next.set(book.id, { ...cur, elapsed: sec });
+        return next;
+      });
+    }, 1000);
+    clueTimersRef.current.set(book.id, tick);
+
+    setClueTasks((prev) => {
+      const next = new Map(prev);
+      next.set(book.id, {
+        bookId: book.id,
+        bookTitle: book.title,
+        busy: true,
+        progress: '整理卡片…',
+        progressFrac: null,
+        progressFails: [],
+        elapsed: 0,
+        error: null,
+        result: null,
+      });
+      return next;
+    });
+
+    try {
+      const chan = new Channel<MindmapEventPayload>();
+      chan.onmessage = (ev) => {
+        const line = formatClueProgress(ev);
+        setClueTasks((prev) => {
+          const cur = prev.get(book.id);
+          if (!cur) return prev;
+          const next = new Map(prev);
+          const fails = ev.stage === 'chapter_failed'
+            ? [...cur.progressFails, formatClueProgress(ev)]
+            : cur.progressFails;
+          next.set(book.id, {
+            ...cur,
+            progress: line || cur.progress,
+            progressFrac: ev.total > 0 ? { current: ev.current, total: ev.total } : cur.progressFrac,
+            progressFails: fails,
+          });
+          return next;
+        });
+      };
+      const result = await call<Mindmap>('generate_mindmap', { bookId: book.id, onProgress: chan });
+      setClueTasks((prev) => {
+        const cur = prev.get(book.id);
+        const next = new Map(prev);
+        next.set(book.id, {
+          bookId: book.id,
+          bookTitle: book.title,
+          busy: false,
+          progress: null,
+          progressFrac: null,
+          progressFails: cur?.progressFails ?? [],
+          elapsed: 0,
+          error: null,
+          result,
+        });
+        return next;
+      });
+      showToast(`《${book.title}》线索归纳完成`);
+    } catch (e) {
+      const msg = explainError(e);
+      setClueTasks((prev) => {
+        const cur = prev.get(book.id);
+        const next = new Map(prev);
+        next.set(book.id, {
+          bookId: book.id,
+          bookTitle: book.title,
+          busy: false,
+          progress: null,
+          progressFrac: null,
+          progressFails: cur?.progressFails ?? [],
+          elapsed: 0,
+          error: msg,
+          result: null,
+        });
+        return next;
+      });
+      showToast(msg.split('\n')[0] || msg);
+    } finally {
+      const t = clueTimersRef.current.get(book.id);
+      if (t) {
+        window.clearInterval(t);
+        clueTimersRef.current.delete(book.id);
+      }
+    }
+  }, [clueTasks, showToast]);
+
+  const runningClueTask = useMemo(() => {
+    for (const t of clueTasks.values()) {
+      if (t.busy) return t;
+    }
+    return null;
+  }, [clueTasks]);
 
   const wallFilter = useCallback((): CardFilter => ({
     ...emptyFilter(),
@@ -449,6 +576,17 @@ export default function App() {
           />
         </div>
         <div className="top-actions">
+          {runningClueTask && (
+            <button
+              type="button"
+              className="ghost clue-top-indicator"
+              onClick={() => setView({ name: 'mindmap', bookId: runningClueTask.bookId })}
+              title={`《${runningClueTask.bookTitle}》线索正在归纳中，点击查看进度`}
+            >
+              <span className="clue-top-dot" />
+              归纳《{runningClueTask.bookTitle}》{runningClueTask.progressFrac ? ` ${Math.round((runningClueTask.progressFrac.current / runningClueTask.progressFrac.total) * 100)}%` : '…'}
+            </button>
+          )}
           <button
             className="primary top-sync"
             disabled={!!syncing || !hasKey}
@@ -590,11 +728,13 @@ export default function App() {
                             </button>
                           )}
                           <button
-                            className="link-btn"
+                            className={`link-btn${clueTasks.get(activeBook.id)?.busy ? ' clue-busy' : ''}`}
                             onClick={() => setView({ name: 'mindmap', bookId: activeBook.id })}
-                            title="用划线归纳一张主题脑图"
+                            title={clueTasks.get(activeBook.id)?.busy ? '线索正在归纳中，点击查看进度' : '用划线归纳一本书的主题线索'}
                           >
-                            线索
+                            {clueTasks.get(activeBook.id)?.busy
+                              ? `线索 · 归纳中${clueTasks.get(activeBook.id)?.progressFrac ? ` ${Math.round(((clueTasks.get(activeBook.id)?.progressFrac?.current ?? 0) / (clueTasks.get(activeBook.id)?.progressFrac?.total ?? 1)) * 100)}%` : '…'}`
+                              : '线索'}
                           </button>
                           <span className="card-date">{countLabel}</span>
                         </div>
@@ -676,6 +816,8 @@ export default function App() {
               onExit={() => { refreshMeta(); setView({ name: 'cards', bookId: view.bookId }); }}
               onOpenCard={(card) => setEditing(card)}
               onNeedSettings={() => setView({ name: 'settings' })}
+              activeTask={clueTasks.get(view.bookId)}
+              onStartGenerate={startGenerateClue}
             />
           )}
           {view.name === 'review' && (
@@ -1528,24 +1670,87 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
   );
 }
 
-export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSettings }: {
+export function MindmapView({
+  book,
+  cards,
+  onToast,
+  onExit,
+  onOpenCard,
+  onNeedSettings,
+  activeTask,
+  onStartGenerate,
+}: {
   book: { id: number; title: string };
   cards: CardRow[];
   onToast: (m: string) => void;
   onExit: () => void;
   onOpenCard: (card: CardRow) => void;
   onNeedSettings: () => void;
+  activeTask?: ClueTask;
+  onStartGenerate?: (book: { id: number; title: string }) => Promise<void>;
 }) {
   const [status, setStatus] = useState<MindmapStatus | null>(null);
   const [map, setMap] = useState<Mindmap | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [localBusy, setLocalBusy] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [localProgress, setLocalProgress] = useState<string | null>(null);
+  const [localProgressFrac, setLocalProgressFrac] = useState<{ current: number; total: number } | null>(null);
+  const [localProgressFails, setLocalProgressFails] = useState<string[]>([]);
+  const [localElapsed, setLocalElapsed] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [confirmRegenerating, setConfirmRegenerating] = useState(false);
+  const [allBookCards, setAllBookCards] = useState<CardRow[]>(cards);
+
+  const busy = activeTask ? activeTask.busy : localBusy;
+  const progress = activeTask ? activeTask.progress : localProgress;
+  const progressFrac = activeTask ? activeTask.progressFrac : localProgressFrac;
+  const progressFails = activeTask ? activeTask.progressFails : localProgressFails;
+  const elapsed = activeTask ? activeTask.elapsed : localElapsed;
+  const error = activeTask?.error ?? localError;
+
+  useEffect(() => {
+    if (activeTask?.result) {
+      setMap(activeTask.result);
+      setStatus((s) => (s ? { ...s, cached: activeTask.result, stale: false } : s));
+    }
+  }, [activeTask?.result]);
+
+  const loadBookCards = useCallback(async () => {
+    try {
+      const rows = await call<CardRow[]>('query_cards', {
+        filter: { ...emptyFilter(), bookId: book.id },
+        limit: 10000,
+        offset: 0,
+      });
+      if (rows && rows.length > 0) {
+        setAllBookCards(rows);
+      }
+    } catch {
+      // 保持使用传入的 cards 作为降级
+    }
+  }, [book.id]);
+
+  useEffect(() => {
+    loadBookCards();
+  }, [loadBookCards]);
+
+  useEffect(() => {
+    if (cards && cards.length > 0) {
+      setAllBookCards((prev) => {
+        const m = new Map(prev.map((c) => [c.id, c]));
+        for (const c of cards) m.set(c.id, c);
+        return Array.from(m.values());
+      });
+    }
+  }, [cards]);
+
   const byId = useMemo(() => {
     const m = new Map<number, CardRow>();
     for (const c of cards) m.set(c.id, c);
+    for (const c of allBookCards) m.set(c.id, c);
     return m;
-  }, [cards]);
+  }, [cards, allBookCards]);
 
   useEffect(() => {
     let alive = true;
@@ -1566,31 +1771,76 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
       if (typing) return;
       if (e.key !== 'Escape') return;
       e.preventDefault();
-      if (openId) setOpenId(null);
-      else onExit();
+      if (openId) {
+        setOpenId(null);
+      } else if (expandedId) {
+        setExpandedId(null);
+      } else {
+        onExit();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [openId, onExit]);
+  }, [openId, expandedId, onExit]);
 
   const generate = async () => {
     if (busy) return;
     if ((status?.cardCount ?? 0) < 2) {
-      setError('至少两张卡片才能归纳。先同步这本书，或再划两条。');
+      setLocalError('至少两张卡片才能归纳。先同步这本书，或再划两条。');
       return;
     }
-    setBusy(true);
-    setError(null);
+    if (onStartGenerate) {
+      setLocalError(null);
+      void onStartGenerate(book);
+      return;
+    }
+    setLocalBusy(true);
+    setLocalError(null);
+    setLocalProgress('整理卡片…');
+    setLocalProgressFrac(null);
+    setLocalProgressFails([]);
+    setLocalElapsed(0);
+    const started = Date.now();
+    const tick = window.setInterval(() => {
+      setLocalElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
     try {
-      const next = await call<Mindmap>('generate_mindmap', { bookId: book.id });
+      const chan = new Channel<MindmapEventPayload>();
+      chan.onmessage = (ev) => {
+        const line = formatClueProgress(ev);
+        if (line) setLocalProgress(line);
+        if (ev.total > 0) setLocalProgressFrac({ current: ev.current, total: ev.total });
+        if (ev.stage === 'chapter_failed') {
+          setLocalProgressFails((prev) => [...prev, formatClueProgress(ev)]);
+        }
+      };
+      const next = await call<Mindmap>('generate_mindmap', { bookId: book.id, onProgress: chan });
       setMap(next);
       setStatus((s) => s ? { ...s, cached: next, stale: false } : s);
+      setLocalProgress(null);
+      setLocalProgressFrac(null);
+      setLocalProgressFails([]);
     } catch (e) {
       const msg = explainError(e);
-      setError(msg);
-      onToast(msg);
+      setLocalError(msg);
+      setLocalProgress(null);
+      setLocalProgressFrac(null);
+      onToast(msg.split('\n')[0] || msg);
     } finally {
-      setBusy(false);
+      window.clearInterval(tick);
+      setLocalBusy(false);
+      setLocalElapsed(0);
+    }
+  };
+
+  const handleCopyOutline = async () => {
+    if (!map) return;
+    try {
+      const text = exportClueOutline(map);
+      await navigator.clipboard.writeText(text);
+      onToast('已复制线索大纲到剪贴板');
+    } catch {
+      onToast('复制大纲失败，请重试');
     }
   };
 
@@ -1613,13 +1863,25 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
             {map ? ` · ${map.stats.themes} 题` : ''}
           </span>
         </div>
-        <button className="ghost" onClick={onExit}>返回（Esc）</button>
+        <div className="mm-head-actions">
+          {map && (
+            <button
+              type="button"
+              className="ghost"
+              onClick={handleCopyOutline}
+              title="复制为 Markdown 树状大纲"
+            >
+              复制大纲
+            </button>
+          )}
+          <button className="ghost" onClick={onExit}>返回（Esc）</button>
+        </div>
       </div>
       {!status && <p className="hint">载入线索…</p>}
       {status?.providerOff && !map && (
         <div className="deck-done">
           <p className="review-text">还没有启用语言模型</p>
-          <p className="review-hint">到设置「四、语言模型」选择供应商后，才能把划线压成主题图。</p>
+          <p className="review-hint">到设置「四、语言模型」选择供应商后，才能把划线归纳成主题线索。</p>
           <div className="deck-done-actions">
             <button className="primary" onClick={onNeedSettings}>去设置</button>
             <button className="ghost" onClick={onExit}>返回卡片墙</button>
@@ -1635,6 +1897,13 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
           {status.chatEndpoint && (
             <p className="hint-mono">请求 {status.model ?? '模型'} · POST {status.chatEndpoint}</p>
           )}
+          <ClueProgress
+            busy={busy}
+            line={progress}
+            frac={progressFrac}
+            elapsed={elapsed}
+            fails={progressFails}
+          />
           {error && <p className="err">{error}</p>}
           <div className="deck-done-actions">
             <button className="primary" onClick={() => void generate()} disabled={busy}>
@@ -1648,40 +1917,165 @@ export function MindmapView({ book, cards, onToast, onExit, onOpenCard, onNeedSe
       {map && (
         <>
           <p className="hint">
-            {status?.stale ? '划线已变，图还是上次的。' : ''}
-            <button className="link-btn" onClick={() => void generate()} disabled={busy}>
+            {status?.stale ? '划线已变，线索还是上次的。' : ''}
+            <button
+              className="link-btn"
+              onClick={() => {
+                if (status?.stale) {
+                  void generate();
+                } else {
+                  setConfirmRegenerating(true);
+                }
+              }}
+              disabled={busy}
+            >
               {busy ? '归纳中…' : (status?.stale ? '更新' : '重新生成')}
             </button>
           </p>
-          <MindmapCanvas mapRoot={map.root} openId={openId} onOpen={setOpenId} />
+          <ClueProgress
+            busy={busy}
+            line={progress}
+            frac={progressFrac}
+            elapsed={elapsed}
+            fails={progressFails}
+          />
+          <div className="mm-body">
+            <MindmapCanvas
+              mapRoot={map.root}
+              openId={openId}
+              onOpen={setOpenId}
+              expandedId={expandedId}
+              onToggleExpand={(id) => setExpandedId((cur) => cur === id ? null : id)}
+            />
+            {openNode && (
+              <aside
+                className="mm-side-drawer mm-drawer"
+                role="dialog"
+                aria-modal="false"
+                aria-labelledby="mm-drawer-title"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <div className="mm-drawer-header">
+                  <div className="mm-drawer-top">
+                    <h3 id="mm-drawer-title">{openNode.label}</h3>
+                    <button
+                      type="button"
+                      className="mm-drawer-close"
+                      onClick={() => setOpenId(null)}
+                      title="收起证据抽屉（Esc）"
+                    >
+                      关闭
+                    </button>
+                  </div>
+                  {openNode.summary && <p className="hint">{openNode.summary}</p>}
+                  <p className="hint-mono">证据 {evidence.length} 张</p>
+                </div>
+                <div className="mm-evidence">
+                  {evidence.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="mm-ev-item"
+                      onClick={() => onOpenCard(c)}
+                    >
+                      <div className="mm-ev-head">
+                        <span className="card-eyebrow">
+                          {c.starred ? '★ ' : ''}
+                          {c.kind === 'thought' ? '想法' : c.kind === 'self' ? '编者按' : '划线'}
+                          {c.chapterTitle ? ` · ${c.chapterTitle}` : ''}
+                        </span>
+                        {c.tags && c.tags.length > 0 && (
+                          <span className="mm-ev-tags">
+                            {c.tags.map((t) => <span key={t} className="tag">#{t}</span>)}
+                          </span>
+                        )}
+                      </div>
+                      <span className="mm-ev-text">{c.text}</span>
+                      {c.kind === 'thought' && c.abstractText && (
+                        <blockquote className="mm-ev-abstract">
+                          {c.abstractText}
+                        </blockquote>
+                      )}
+                      {c.note && <p className="card-note mm-ev-note">{c.note}</p>}
+                    </button>
+                  ))}
+                  {evidence.length === 0 && (
+                    <p className="hint">这些卡不在当前墙里，仍可在全书搜索中找到。</p>
+                  )}
+                </div>
+                <div className="mm-drawer-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      const text = `# ${openNode.label}${openNode.summary ? `\n> ${openNode.summary}` : ''}\n\n` +
+                        evidence.map((c, i) => `${i + 1}. ${c.text}${c.note ? `\n   注：${c.note}` : ''}`).join('\n');
+                      navigator.clipboard.writeText(text).then(() => onToast('已复制该题证据')).catch(() => {});
+                    }}
+                    title="复制此主题及全部证据"
+                  >
+                    复制本题
+                  </button>
+                  <button type="button" className="ghost" onClick={() => setOpenId(null)}>
+                    关闭
+                  </button>
+                </div>
+              </aside>
+            )}
+          </div>
           {map.warnings.length > 0 && (
             <p className="hint">{map.warnings[map.warnings.length - 1]}</p>
           )}
         </>
       )}
-      {openNode && (
-        <div className="modal-mask" onClick={() => setOpenId(null)}>
-          <div className="modal mm-drawer" role="dialog" aria-modal="true" aria-labelledby="mm-drawer-title" onClick={(e) => e.stopPropagation()}>
-            <h3 id="mm-drawer-title">{openNode.label}</h3>
-            {openNode.summary && <p className="hint">{openNode.summary}</p>}
-            <p className="hint-mono">证据 {evidence.length} 张</p>
-            <div className="mm-evidence">
-              {evidence.map((c) => (
-                <button key={c.id} className="mm-ev-item" onClick={() => onOpenCard(c)}>
-                  <span className="card-eyebrow">
-                    {c.starred ? '星标 · ' : ''}{c.kind === 'thought' ? '想法' : c.kind === 'self' ? '编者按' : '划线'}
-                    {c.chapterTitle ? ` · ${c.chapterTitle}` : ''}
-                  </span>
-                  <span className="mm-ev-text">{c.text}</span>
-                </button>
-              ))}
-              {evidence.length === 0 && <p className="hint">这些卡不在当前墙里，仍可在全书搜索中找到。</p>}
-            </div>
-            <div className="modal-actions">
-              <button className="ghost" onClick={() => setOpenId(null)}>关闭</button>
-            </div>
+      {confirmRegenerating && (
+        <ConfirmModal
+          title="重新归纳线索"
+          message="确定要重新归纳吗？当前已生成的线索结构将被新结果覆盖。"
+          confirmLabel="确认重新生成"
+          onConfirm={() => {
+            setConfirmRegenerating(false);
+            void generate();
+          }}
+          onCancel={() => setConfirmRegenerating(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ClueProgress({ busy, line, frac, elapsed, fails }: {
+  busy: boolean;
+  line: string | null;
+  frac: { current: number; total: number } | null;
+  elapsed: number;
+  fails: string[];
+}) {
+  const elapsedText = formatClueElapsed(elapsed);
+  if (!busy && !line && fails.length === 0) return null;
+  const total = frac?.total ?? 0;
+  const current = frac?.current ?? 0;
+  const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+  return (
+    <div className="mm-progress">
+      {line && (
+        <p className="mm-progress-line" role="status" aria-live="polite" aria-busy={busy}>
+          {line}
+        </p>
+      )}
+      {elapsedText && <p className="mm-progress-elapsed">{elapsedText}</p>}
+      {total > 1 && (
+        <div className="mm-progress-meter">
+          <div className="mm-progress-bar" aria-hidden="true">
+            <i style={{ width: `${pct}%` }} />
           </div>
+          <span className="mm-progress-frac mono">{current} / {total}</span>
         </div>
+      )}
+      {fails.length > 0 && (
+        <ul className="mm-fails">
+          {fails.map((f, i) => <li key={`${i}-${f}`}>{f}</li>)}
+        </ul>
       )}
     </div>
   );
@@ -1714,16 +2108,24 @@ function panToShow(
   return { x, y };
 }
 
-function MindmapCanvas({ mapRoot, openId, onOpen }: {
+function MindmapCanvas({
+  mapRoot,
+  openId,
+  onOpen,
+  expandedId,
+  onToggleExpand,
+}: {
   mapRoot: MindmapNode;
   openId: string | null;
   onOpen: (id: string) => void;
+  expandedId: string | null;
+  onToggleExpand: (id: string) => void;
 }) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
   const [dragging, setDragging] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ px: number; py: number; panX: number; panY: number } | null>(null);
+  const drag = useRef<{ px: number; py: number; panX: number; panY: number; moved: boolean } | null>(null);
   const centered = useRef(false);
   const vis = useMemo(() => visibleClue(mapRoot, expandedId), [mapRoot, expandedId]);
   const childCount = useMemo(() => {
@@ -1738,10 +2140,24 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
   }, [childCount]);
   const laid = useMemo(() => layoutMindmap(vis, expandIds), [vis, expandIds]);
 
+  const resetView = useCallback((targetZoom = 1) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const sw = stage.clientWidth;
+    const sh = stage.clientHeight;
+    const hub = laid.nodes.find((n) => n.depth === 0);
+    if (!hub) return;
+    setZoom(targetZoom);
+    setPan({
+      x: sw / 2 - (hub.x + hub.w / 2) * targetZoom,
+      y: sh / 2 - (hub.y + hub.h / 2) * targetZoom,
+    });
+  }, [laid]);
+
   useEffect(() => {
     centered.current = false;
-    setExpandedId(null);
     setPan({ x: 0, y: 0 });
+    setZoom(1);
   }, [mapRoot]);
 
   useEffect(() => {
@@ -1753,10 +2169,16 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
     const hub = laid.nodes.find((n) => n.depth === 0);
     if (!hub) return;
     if (!expandedId) {
-      if (centered.current) return;
+      if (centered.current) {
+        setPan({
+          x: sw / 2 - (hub.x + hub.w / 2) * zoom,
+          y: sh / 2 - (hub.y + hub.h / 2) * zoom,
+        });
+        return;
+      }
       setPan({
-        x: sw / 2 - (hub.x + hub.w / 2),
-        y: sh / 2 - (hub.y + hub.h / 2),
+        x: sw / 2 - (hub.x + hub.w / 2) * zoom,
+        y: sh / 2 - (hub.y + hub.h / 2) * zoom,
       });
       centered.current = true;
       return;
@@ -1773,24 +2195,49 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
       maxX = Math.max(maxX, n.x + n.w);
       maxY = Math.max(maxY, n.y + n.h);
     }
-    setPan((cur) => panToShow(cur, { minX, minY, maxX, maxY }, sw, sh));
-  }, [laid, expandedId]);
+    setPan((cur) => panToShow(cur, { minX: minX * zoom, minY: minY * zoom, maxX: maxX * zoom, maxY: maxY * zoom }, sw, sh));
+  }, [laid, expandedId, zoom]);
+
+  const changeZoom = useCallback((getNextZoom: (cur: number) => number) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const sw = stage.clientWidth;
+    const sh = stage.clientHeight;
+    const cx = sw / 2;
+    const cy = sh / 2;
+    setZoom((curZoom) => {
+      const nextZoom = Math.min(2.0, Math.max(0.4, Number(getNextZoom(curZoom).toFixed(2))));
+      if (nextZoom === curZoom) return curZoom;
+      setPan((curPan) => ({
+        x: cx - (cx - curPan.x) * (nextZoom / curZoom),
+        y: cy - (cy - curPan.y) * (nextZoom / curZoom),
+      }));
+      return nextZoom;
+    });
+  }, []);
 
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+      if (e.ctrlKey || e.metaKey) {
+        const factor = e.deltaY < 0 ? 1.08 : 0.92;
+        changeZoom((cur) => cur * factor);
+      } else {
+        setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+      }
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [changeZoom]);
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
-    if (t.closest('button') || t.closest('.mm-chip') || t.closest('.mm-hub')) return;
-    drag.current = { px: e.clientX, py: e.clientY, panX: pan.x, panY: pan.y };
+    if (t.closest('button') || t.closest('.mm-controls') || t.closest('.mm-side-drawer')) {
+      return;
+    }
+    drag.current = { px: e.clientX, py: e.clientY, panX: pan.x, panY: pan.y, moved: false };
     e.currentTarget.setPointerCapture(e.pointerId);
     setDragging(true);
   };
@@ -1801,7 +2248,10 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
       y: drag.current.panY + (e.clientY - drag.current.py),
     });
   };
-  const endDrag = () => {
+  const endDrag = (e: PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
     drag.current = null;
     setDragging(false);
   };
@@ -1820,7 +2270,8 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
         style={{
           width: laid.width,
           height: laid.height,
-          transform: `translate(${pan.x}px, ${pan.y}px)`,
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          transformOrigin: '0 0',
         }}
       >
         <svg className="mm-wires" width={laid.width} height={laid.height} aria-hidden="true">
@@ -1847,7 +2298,11 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
               className={`mm-chip depth-${p.depth}${openId === p.id ? ' active' : ''}${expandedId === p.id ? ' is-expanded' : ''}`}
               style={{ left: p.x, top: p.y, width: p.w, minHeight: p.h }}
             >
-              <button type="button" className="mm-chip-main" onClick={() => onOpen(p.id)}>
+              <button
+                type="button"
+                className="mm-chip-main"
+                onClick={() => onOpen(p.id)}
+              >
                 <span className="mm-chip-label">{p.node.label}</span>
                 <span className="mm-chip-count mono">{p.node.sourceCardIds.length}</span>
               </button>
@@ -1856,7 +2311,10 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
                   type="button"
                   className="mm-chip-expand mono"
                   aria-pressed={expandedId === p.id}
-                  onClick={() => setExpandedId((cur) => cur === p.id ? null : p.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleExpand(p.id);
+                  }}
                 >
                   子题 {childCount.get(p.id)}
                 </button>
@@ -1864,6 +2322,44 @@ function MindmapCanvas({ mapRoot, openId, onOpen }: {
             </div>
           )
         ))}
+      </div>
+      <div
+        className="mm-controls"
+        aria-label="画布缩放与复位"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="mm-ctrl-btn"
+          title="放大"
+          onClick={() => changeZoom((z) => z + 0.15)}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="mm-ctrl-btn mm-ctrl-pct"
+          title="还原 100%"
+          onClick={() => resetView(1)}
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          type="button"
+          className="mm-ctrl-btn"
+          title="缩小"
+          onClick={() => changeZoom((z) => z - 0.15)}
+        >
+          -
+        </button>
+        <button
+          type="button"
+          className="mm-ctrl-btn"
+          title="居中视野"
+          onClick={() => resetView(zoom)}
+        >
+          居中
+        </button>
       </div>
     </div>
   );

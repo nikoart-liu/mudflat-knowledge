@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { layoutMindmap, nodeBox, visibleClue } from './mindmap-layout';
+import { exportClueOutline, layoutMindmap, nodeBox, visibleClue } from './mindmap-layout';
 import type { MindmapNode } from './types';
 
 function theme(id: string, label: string, children: MindmapNode[] = []): MindmapNode {
@@ -152,5 +152,33 @@ describe('visibleClue', () => {
     const vis = visibleClue(root, 'c');
     expect(vis.children.find((c) => c.id === 'c')!.children.map((g) => g.id)).toEqual(['c1', 'c2']);
     expect(vis.children.find((c) => c.id === 'b')!.children).toEqual([]);
+  });
+});
+
+describe('exportClueOutline', () => {
+  it('把线索树转为带层级缩进与证据数的 Markdown 大纲', () => {
+    const root: MindmapNode = {
+      id: 'root',
+      label: '原子习惯 · 我的划线',
+      kind: 'book',
+      sourceCardIds: [],
+      children: [
+        {
+          id: 'a',
+          label: '环境在替你做决定',
+          kind: 'theme',
+          summary: '少靠自控，多改摆设',
+          sourceCardIds: [1, 2],
+          children: [
+            { id: 'a1', label: '把充电器换房间', kind: 'theme', sourceCardIds: [1], children: [] },
+          ],
+        },
+      ],
+    };
+    const md = exportClueOutline({ title: '原子习惯', root });
+    expect(md).toContain('# 线索 · 原子习惯');
+    expect(md).toContain('中心：原子习惯 · 我的划线');
+    expect(md).toContain('- **环境在替你做决定** —— 少靠自控，多改摆设 (2条证据)');
+    expect(md).toContain('  - 把充电器换房间 (1条证据)');
   });
 });

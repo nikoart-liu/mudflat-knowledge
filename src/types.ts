@@ -68,6 +68,14 @@ export interface SyncEventPayload {
   bookTitle: string;
 }
 
+export interface MindmapEventPayload {
+  stage: string;
+  current: number;
+  total: number;
+  title: string;
+  message: string;
+}
+
 export interface FailedBook {
   bookId: string;
   title: string;
@@ -144,5 +152,17 @@ export interface MindmapStatus {
   stale: boolean;
   chatEndpoint?: string | null;
   model?: string | null;
+}
+
+export interface ClueTask {
+  bookId: number;
+  bookTitle: string;
+  busy: boolean;
+  progress: string | null;
+  progressFrac: { current: number; total: number } | null;
+  progressFails: string[];
+  elapsed: number;
+  error: string | null;
+  result?: Mindmap | null;
 }
 

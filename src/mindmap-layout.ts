@@ -195,3 +195,21 @@ export function layoutMindmap(root: MindmapNode, expandIds?: ReadonlySet<string>
     edges,
   };
 }
+
+export function exportClueOutline(map: { title: string; root: MindmapNode }): string {
+  const lines: string[] = [`# 线索 · ${map.title}`];
+  if (map.root.label) {
+    lines.push(`\n中心：${map.root.label}\n`);
+  }
+  for (const c1 of map.root.children) {
+    const sum1 = c1.summary ? ` —— ${c1.summary}` : '';
+    const n1 = c1.sourceCardIds.length;
+    lines.push(`- **${c1.label}**${sum1}${n1 > 0 ? ` (${n1}条证据)` : ''}`);
+    for (const c2 of c1.children) {
+      const sum2 = c2.summary ? ` —— ${c2.summary}` : '';
+      const n2 = c2.sourceCardIds.length;
+      lines.push(`  - ${c2.label}${sum2}${n2 > 0 ? ` (${n2}条证据)` : ''}`);
+    }
+  }
+  return lines.join('\n');
+}
