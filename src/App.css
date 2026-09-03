@@ -67,11 +67,12 @@ html, body, #root {
 /* 刊物标题体系：衬线大字归刊头，正文永远黑体 */
 h1, h2, h3, .serif { font-family: var(--font-display); letter-spacing: -0.01em; }
 
-/* 中文排印细节：prose 面（卡片正文/批注/清样/引文）按中文出版物惯例处理标点——
+/* 中文排印细节：prose 面（卡片正文/批注/翻牌/引文）按中文出版物惯例处理标点——
    行首开引号半角（text-spacing-trim: trim-start）、行尾标点悬挂（hanging-punctuation）。
    两者均为渐进增强，引擎不支持时按默认排法回退。 */
-.card-text, .card-note, .review-text,
-.abstract blockquote, .quote-box, .deck-face.front blockquote {
+.card-text, .card-note, .review-text, .scaffold-example,
+.abstract blockquote, .quote-box, .deck-face.front blockquote,
+.empty-lede, .empty-step-copy {
   hanging-punctuation: first allow-end;
   text-spacing-trim: trim-start;
 }
@@ -242,17 +243,20 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .side-scroll::-webkit-scrollbar,
 .tag-cloud::-webkit-scrollbar,
 .quote-box::-webkit-scrollbar,
-.deck-face.front::-webkit-scrollbar { width: 4px; }
+.deck-face.front::-webkit-scrollbar,
+.scaffold-copy::-webkit-scrollbar { width: 4px; }
 .main::-webkit-scrollbar-thumb,
 .side-scroll::-webkit-scrollbar-thumb,
 .tag-cloud::-webkit-scrollbar-thumb,
 .quote-box::-webkit-scrollbar-thumb,
-.deck-face.front::-webkit-scrollbar-thumb { background: var(--ink); border-radius: 0; }
+.deck-face.front::-webkit-scrollbar-thumb,
+.scaffold-copy::-webkit-scrollbar-thumb { background: var(--ink); border-radius: 0; }
 .main::-webkit-scrollbar-track,
 .side-scroll::-webkit-scrollbar-track,
 .tag-cloud::-webkit-scrollbar-track,
 .quote-box::-webkit-scrollbar-track,
-.deck-face.front::-webkit-scrollbar-track { background: transparent; }
+.deck-face.front::-webkit-scrollbar-track,
+.scaffold-copy::-webkit-scrollbar-track { background: transparent; }
 
 /* 章节头：本栏目页眉，墨线压底 */
 .content-header {
@@ -282,7 +286,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   font-family: var(--font-mono); font-size: 10px;
   background: var(--ink); color: var(--paper); padding: 3px 8px;
 }
-/* 本书清样入口：到期徽标实底金（与侧栏到期计数同一预算），点击直达本书回顾 */
+/* 本书翻牌入口：到期徽标实底金（与侧栏到期计数同一预算），点击直达本书回顾 */
 .due-chip {
   margin: 0; border: none; border-radius: 0;
   background: var(--ember); color: var(--paper);
@@ -425,12 +429,68 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .card-actions button:hover { color: var(--ink); background: transparent; }
 .card-actions button:last-child:hover { color: var(--ember); }
 .empty-state { padding: 48px 32px; }
-.empty-setup { padding: 64px 32px 80px; max-width: 30em; grid-column: 1 / -1; }
-.empty-setup .empty-title {
-  margin: 0 0 20px; font-family: var(--font-display); font-style: italic;
-  font-size: 22px; font-weight: 700; line-height: 1.3; color: var(--ink);
-  text-wrap: balance; /* 两行空态标题不孤行 */
+/* 空态 = 发刊词：与章节头左缘对齐、衬线标题、墨线目录步，不另开欢迎页 */
+.empty-setup {
+  grid-column: 1 / -1;
+  width: min(34rem, 100%);
+  margin: 4px 0 72px;
+  padding: 0;
 }
+.empty-setup .empty-title {
+  margin: 0;
+  font-family: var(--font-display); font-style: italic;
+  font-size: 22px; font-weight: 700; line-height: 1.3; color: var(--ink);
+  text-wrap: balance;
+}
+.empty-lede {
+  margin: 14px 0 0;
+  font-size: 14px; line-height: 1.7; color: var(--ink);
+}
+.empty-setup > button { margin-top: 24px; }
+.empty-steps {
+  list-style: none;
+  margin: 28px 0 0; padding: 0;
+  border-top: 1px solid var(--editorial-line);
+}
+.empty-step {
+  display: grid;
+  grid-template-columns: 2.5em minmax(0, 1fr);
+  gap: 0 12px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.empty-step-no {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.12em; color: var(--ink-muted);
+  padding-top: 4px; font-variant-numeric: tabular-nums;
+}
+.empty-step-title {
+  margin: 0 0 6px;
+  font-family: var(--font-display); font-size: 16px; font-weight: 700;
+  font-style: italic; line-height: 1.3;
+}
+.empty-step-copy {
+  margin: 0 0 14px;
+  font-size: 13px; line-height: 1.7; color: var(--ink-muted);
+}
+.empty-key-label {
+  display: block; margin: 0 0 6px;
+  font-family: var(--font-mono); font-size: 11px;
+}
+.empty-key {
+  width: 100%; padding: 12px 16px; margin: 0 0 12px;
+  border: 1px solid var(--ink); border-radius: 0;
+  font-family: var(--font-display); font-size: 15px;
+  background: transparent; color: var(--ink); letter-spacing: 0.2em;
+  transition: box-shadow var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
+}
+.empty-key:focus {
+  outline: none; border-color: var(--ink);
+  box-shadow: 0 0 0 1px var(--ember);
+}
+.empty-key:disabled { opacity: 0.4; }
+.empty-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.empty-setup .err { margin: 10px 0 0; font-size: 12px; }
 .wall-more {
   grid-column: 1 / -1;
   display: flex; align-items: center; gap: 12px;
@@ -525,17 +585,19 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .ok { color: var(--grade-good); }
 .row { display: flex; gap: 8px; }
 
-/* ---------- 复习 · 清样校对 ---------- */
+/* ---------- 翻牌回顾 ---------- */
 .review { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; max-width: 800px; margin: 0 auto; padding: 0 32px; }
 .review-title {
   font-family: var(--font-display); font-size: 22px; font-weight: 700;
-  letter-spacing: 0.3em; margin: 0 0 28px; text-align: center;
+  letter-spacing: 0.3em; margin: 0 0 var(--space-section); text-align: center;
   padding-left: 0.3em; /* 等值补偿尾随字距，居中字才真正居中 */
 }
-/* 本书清样的范围行：mono 弱化书名，压在标题与正文之间 */
+/* 进行中标题是栏眉不是扉页，收紧与页码行的距离 */
+.review:has(.review-top) .review-title { margin-bottom: 16px; }
+/* 本书翻牌的范围行：mono 弱化书名，压在标题与正文之间 */
 .review-scope {
   font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted);
-  letter-spacing: 0.14em; margin: -18px 0 20px; text-align: center;
+  letter-spacing: 0.14em; margin: -8px 0 16px; text-align: center;
   padding-left: 0.14em; /* 尾随字距补偿 */
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -545,7 +607,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted);
   letter-spacing: 0.14em;
 }
-.review-count { font-family: var(--font-display); font-size: 18px; font-weight: 700; }
+.review-count { font-family: var(--font-display); font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 /* 退出钮：墨框，hover 反白 */
 .review-top button {
   border: 1px solid var(--ink); background: transparent; color: var(--ink);
@@ -553,12 +615,13 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 }
 .review-top button:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
 
-/* 校对进度：连续墨条，当前张染金 */
+/* 翻牌进度：连续墨条，当前张染金 */
 .review-ticks { display: flex; gap: 0; width: 100%; margin-top: 12px; height: 6px; background: var(--panel); outline: 1px solid var(--hairline); }
 .review-ticks i { flex: 1; height: 100%; background: transparent; transition: background var(--t-fast) var(--ease-out); }
 .review-ticks i.done { background: var(--ink); }
 .review-ticks i.now { background: var(--ember); }
 
+.review-body { width: 100%; }
 .deck-stage { position: relative; width: 100%; height: 420px; margin-top: 40px; perspective: 1400px; cursor: pointer; border: none; background: transparent; padding: 0; }
 .deck-under { position: absolute; inset: 0; background: var(--panel); border: 1px solid var(--hairline); border-radius: 0; transition: transform 240ms var(--ease-out); }
 .deck-under.u1 { z-index: 2; transform: rotate(1.5deg) translate(8px, 8px); border-color: var(--editorial-line); }
@@ -575,7 +638,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .deck-face.back { justify-content: center; align-items: center; }
 .deck-face.front { transform: rotateY(180deg); overflow-y: auto; }
 
-/* 背面：清样编目页，内衬栏线框 + 衬线编目大字 */
+/* 背面：翻牌编目页，内衬栏线框 + 衬线编目大字 */
 .deck-back-frame { position: absolute; inset: 12px; border: 1px solid var(--hairline); border-radius: 0; pointer-events: none; }
 .deck-back-inner { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .deck-back-label {
@@ -585,10 +648,19 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 }
 .deck-back-num { font-family: var(--font-display); font-size: 88px; font-weight: 700; color: var(--ink); letter-spacing: 0; line-height: 1; }
 .deck-back-num > span { font-size: 15px; color: var(--ink-muted); margin-left: 8px; font-family: var(--font-mono); font-weight: 400; }
-.deck-back-hint { position: absolute; bottom: 26px; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; color: var(--ink-muted); }
+.deck-back-hint {
+  position: absolute; bottom: 26px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 400;
+  letter-spacing: 0.14em; color: var(--ink-muted);
+  padding-left: 0.14em; /* 尾随字距补偿 */
+}
 /* 正面：阅读级排版为王 */
 .deck-front-inner { margin: auto 0; }
-.deck-face .card-source { position: absolute; top: 16px; left: 20px; right: 20px; }
+.deck-face .card-source {
+  position: absolute; top: 16px; left: 20px; right: 20px;
+  font-family: var(--font-mono); font-size: 10px; font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
 .deck-face.front blockquote {
   margin: 14px 0 0; padding: 2px 0 2px 14px; font-size: 13px;
   background: transparent; border: none; border-left: 2px solid var(--hairline); border-radius: 0;
@@ -625,12 +697,59 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   margin: 0; font-size: 19px; line-height: 1.9; text-align: center;
   text-wrap: balance;
 }
-.scaffold-panel {
-  margin-top: 16px; padding-top: 14px;
-  border-top: 1px solid var(--hairline);
-  display: flex; flex-direction: column; gap: 10px;
+/* 忘了/困难后的回忆支架：原卡让出高度、保持行宽；释义自滚，动作跟在文后（文长时钉在可视底）。 */
+.review.has-scaffold {
+  justify-content: flex-start;
+  padding: 24px 32px 28px;
+  overflow: hidden;
+  min-height: 0;
 }
-.scaffold-panel .review-text { font-size: 16px; line-height: 1.7; }
+.review.has-scaffold .review-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.review.has-scaffold .deck-stage {
+  height: min(220px, 30vh);
+  margin-top: 12px;
+  flex: 0 0 auto;
+  cursor: default;
+}
+.review.has-scaffold .deck-under { display: none; }
+.review.has-scaffold .deck-face { padding: 28px 32px; }
+.scaffold-panel {
+  margin-top: 16px; padding-top: 16px;
+  border-top: 1px solid var(--hairline);
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  overflow: hidden;
+}
+.scaffold-copy {
+  flex: 0 1 auto; min-height: 0;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.scaffold-copy .quote-box {
+  margin: 0;
+  max-height: none;
+  overflow: visible;
+}
+.scaffold-panel .review-text { font-size: 16px; line-height: 1.8; }
+/* 墙卡 .card-note 钳两行；支架里的例子必须整段可见，否则多出行会画在邻卡引文底下。 */
+.scaffold-example {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.scaffold-panel .review-tools {
+  flex-shrink: 0;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
 
 /* 结算：居中文字 + 返回 */
 .deck-done { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 24px; text-align: center; }
@@ -731,10 +850,11 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
   padding: 2px 6px; flex-shrink: 0;
 }
 
-/* 翻牌是唯一舞台：侧栏、检索、同步都退下 */
+/* 翻牌是唯一舞台：侧栏、检索、同步、刊头动作都退下（齿轮会卸掉进行中的批次） */
 .app.is-review .sidebar { display: none; }
 .app.is-review .search,
-.app.is-review .top-sync { display: none; }
+.app.is-review .top-sync,
+.app.is-review .top-actions { display: none; }
 .app.is-mindmap .sidebar { display: none; }
 .app.is-mindmap .search,
 .app.is-mindmap .top-sync { display: none; }

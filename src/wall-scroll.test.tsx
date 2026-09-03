@@ -91,7 +91,7 @@ beforeEach(() => {
       case 'get_review_settings':
         return { batchSize: 20 };
       case 'get_llm_settings':
-        return { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
+        return { provider: 'off', baseUrl: '', model: '', hasKey: false, embeddingProvider: 'off', embeddingBaseUrl: '', embeddingModel: '', hasEmbeddingKey: false };
       case 'get_mindmap_status':
         return { available: false, providerOff: true, cardCount: 0, cached: null, stale: false, chatEndpoint: null, model: null };
       default:

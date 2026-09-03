@@ -2,7 +2,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SettingsView } from './App';
-import { call, type LlmSettings } from './types';
+import { call, emptyLlmSettings, type LlmSettings } from './types';
 
 afterEach(() => cleanup());
 
@@ -13,7 +13,7 @@ vi.mock('./types', async () => {
 
 const callMock = call as unknown as Mock;
 
-const off: LlmSettings = { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
+const off: LlmSettings = emptyLlmSettings();
 
 function mockBackend(llm: LlmSettings = off) {
   let stored = llm;
@@ -26,22 +26,38 @@ function mockBackend(llm: LlmSettings = off) {
       case 'get_llm_settings':
         return stored;
       case 'save_llm_settings': {
-        const draft = args?.draft as { provider: LlmSettings['provider']; baseUrl: string; model: string; embeddingModel: string; key: string };
+        const draft = args?.draft as { provider: LlmSettings['provider']; baseUrl: string; model: string; key: string };
         stored = {
+          ...stored,
           provider: draft.provider,
           baseUrl: draft.baseUrl || (draft.provider === 'openai' ? 'https://api.openai.com/v1' : draft.baseUrl),
           model: draft.model,
-          embeddingModel: draft.embeddingModel
-            || (draft.provider === 'openai' ? 'text-embedding-3-small' : draft.embeddingModel),
           hasKey: draft.provider !== 'off' && (!!draft.key || stored.hasKey),
         };
         return stored;
       }
+      case 'save_embedding_settings': {
+        const draft = args?.draft as { provider: LlmSettings['provider']; baseUrl: string; model: string; key: string };
+        stored = {
+          ...stored,
+          embeddingProvider: draft.provider,
+          embeddingBaseUrl: draft.baseUrl || (draft.provider === 'openai' ? 'https://api.openai.com/v1' : draft.baseUrl),
+          embeddingModel: draft.model
+            || (draft.provider === 'openai' ? 'text-embedding-3-small' : draft.model),
+          hasEmbeddingKey: draft.provider !== 'off' && (!!draft.key || stored.hasEmbeddingKey || stored.hasKey),
+        };
+        return stored;
+      }
       case 'clear_llm_settings':
-        stored = off;
-        return undefined;
+        stored = { ...stored, provider: 'off', baseUrl: '', model: '', hasKey: false };
+        return stored;
+      case 'clear_embedding_settings':
+        stored = { ...stored, embeddingProvider: 'off', embeddingBaseUrl: '', embeddingModel: '', hasEmbeddingKey: false };
+        return stored;
       case 'test_llm_connection':
         return '连接成功：已找到模型 gpt-4o-mini';
+      case 'test_embedding_connection':
+        return '连接成功：向量模型 text-embedding-3-small（1536 维）';
       case 'get_ai_index':
         return { embeddings: 0, artifacts: 0, providerOff: true, embeddingReady: false };
       default:
@@ -84,7 +100,6 @@ describe('SettingsView 语言模型', () => {
           provider: 'openai',
           baseUrl: 'https://api.openai.com/v1',
           model: 'gpt-4o-mini',
-          embeddingModel: 'text-embedding-3-small',
           key: 'sk-test',
         },
       });
@@ -92,11 +107,44 @@ describe('SettingsView 语言模型', () => {
     expect(toasts.some((t) => t.includes('语言模型已保存'))).toBe(true);
   });
 
-  it('选 OpenAI 后露出向量模型默认值', async () => {
-    render(<SettingsView onToast={() => {}} hasKey={false} onKeyChange={() => {}} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'OpenAI' }));
+  it('选 xAI 后向量检索仍可单独配置 OpenAI', async () => {
+    const toasts: string[] = [];
+    render(<SettingsView onToast={(m) => toasts.push(m)} hasKey={false} onKeyChange={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'xAI' }));
+    expect(await screen.findByLabelText('语言模型接口地址')).toBeTruthy();
+    expect(screen.queryByLabelText('向量模型名')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '向量 · OpenAI' }));
     const embed = await screen.findByLabelText('向量模型名');
     expect((embed as HTMLInputElement).value).toBe('text-embedding-3-small');
+    expect((screen.getByLabelText('向量模型接口地址') as HTMLInputElement).value)
+      .toBe('https://api.openai.com/v1');
+
+    fireEvent.change(screen.getByLabelText('向量模型 API Key'), { target: { value: 'sk-embed' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存向量配置' }));
+
+    await waitFor(() => {
+      const save = callMock.mock.calls.find((c) => c[0] === 'save_embedding_settings');
+      expect(save?.[1]).toEqual({
+        draft: {
+          provider: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'text-embedding-3-small',
+          key: 'sk-embed',
+        },
+      });
+    });
+    expect(toasts.some((t) => t.includes('向量模型已保存'))).toBe(true);
+  });
+
+  it('语言模型关闭时仍能配置向量检索', async () => {
+    render(<SettingsView onToast={() => {}} hasKey={false} onKeyChange={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/默认关闭/)).toBeTruthy());
+    expect(screen.queryByLabelText('语言模型接口地址')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '向量 · Ollama' }));
+    expect((screen.getByLabelText('向量模型接口地址') as HTMLInputElement).value)
+      .toBe('http://127.0.0.1:11434/v1');
+    expect((screen.getByLabelText('向量模型名') as HTMLInputElement).value).toBe('nomic-embed-text');
   });
 
   it('从 OpenAI 切到 Ollama 时换成回环地址', async () => {

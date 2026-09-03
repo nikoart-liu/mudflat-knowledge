@@ -2,7 +2,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { EditModal, ReviewView, groupSearchHits } from './App';
-import { call, type CardRow, type QuestionFace, type RelatedCard } from './types';
+import { call, emptyLlmSettings, type CardRow, type QuestionFace, type RelatedCard } from './types';
 
 afterEach(() => cleanup());
 
@@ -79,7 +79,7 @@ describe('EditModal 问题面', () => {
     callMock.mockImplementation(async (cmd: string) => {
       switch (cmd) {
         case 'get_llm_settings':
-          return { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', embeddingModel: 'text-embedding-3-small', hasKey: true };
+          return { ...emptyLlmSettings(), provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', hasKey: true, embeddingProvider: 'openai', embeddingBaseUrl: 'https://api.openai.com/v1', embeddingModel: 'text-embedding-3-small', hasEmbeddingKey: true };
         case 'get_question_face':
           return null;
         case 'propose_question_face':
@@ -136,7 +136,7 @@ describe('ReviewView 问题面与支架', () => {
             content: { ...proposed.content, acceptedQuestion: '这段话如何解释身份与重复行为的关系？' },
           }];
         case 'get_llm_settings':
-          return { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
+          return emptyLlmSettings();
         default:
           throw new Error(`未处理: ${cmd}`);
       }
@@ -157,7 +157,7 @@ describe('ReviewView 问题面与支架', () => {
         case 'get_due_cards': return [card(1, '第一条'), card(2, '第二条')];
         case 'list_accepted_questions': return [];
         case 'get_llm_settings':
-          return { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
+          return emptyLlmSettings();
         case 'grade_review':
           graded.push(String(args?.rating));
           return {
@@ -167,7 +167,7 @@ describe('ReviewView 问题面与支架', () => {
         case 'get_review_scaffold':
           return {
             paraphrase: '身份是重复出来的。',
-            example: null,
+            example: '比如每天写一页，一年后就成了写作者。',
             neighbors: [card(9, '每做一个 1% 的改进。')],
             sourceCardIds: [1, 9],
             fromAi: false,
@@ -184,8 +184,16 @@ describe('ReviewView 问题面与支架', () => {
     fireEvent.keyDown(window, { key: '1' });
     expect(await screen.findByText('换个角度')).toBeTruthy();
     expect(screen.getByText('身份是重复出来的。')).toBeTruthy();
+    expect(screen.getByText('比如每天写一页，一年后就成了写作者。')).toBeTruthy();
+    expect(container.querySelector('.scaffold-example')?.textContent).toBe('比如每天写一页，一年后就成了写作者。');
+    expect(container.querySelector('.scaffold-copy .card-note')).toBeNull();
     expect(graded).toEqual(['again']);
     expect(container.querySelector('.deck-back-num')?.textContent).toMatch(/01/);
+    expect(container.querySelector('.review.has-scaffold')).toBeTruthy();
+    const copy = container.querySelector('.scaffold-copy');
+    expect(copy?.textContent).toContain('身份是重复出来的。');
+    expect(copy?.querySelector('.review-tools')).toBeNull();
+    expect(container.querySelector('.scaffold-panel > .review-tools')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /下一张/ }));
     await waitFor(() => expect(container.querySelector('.deck-back-num')?.textContent).toMatch(/02/), { timeout: 2000 });
   });
@@ -201,7 +209,7 @@ describe('EditModal 相似卡', () => {
     callMock.mockImplementation(async (cmd: string) => {
       switch (cmd) {
         case 'get_llm_settings':
-          return { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
+          return emptyLlmSettings();
         case 'get_question_face':
           return null;
         case 'get_related_cards':

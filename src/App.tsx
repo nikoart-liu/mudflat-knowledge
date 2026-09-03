@@ -7,9 +7,11 @@ import {
   type CardFilter,
   type CardRow,
   type ReviewRating,
+  type EmbeddingDraft,
   type LlmDraft,
   type LlmProvider,
   type LlmSettings,
+  emptyLlmSettings,
   type MatchKind,
   type QuestionFace,
   type RelatedCard,
@@ -131,12 +133,19 @@ const RATING_DEFS: { key: ReviewRating; num: number; label: string }[] = [
 ];
 
 const REVIEW_BATCH_OPTIONS = [10, 20, 30];
-const LLM_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; model: string; embeddingModel: string }[] = [
-  { key: 'off', label: '关闭', baseUrl: '', model: '', embeddingModel: '' },
-  { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', embeddingModel: 'text-embedding-3-small' },
-  { key: 'xai', label: 'xAI', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.5', embeddingModel: '' },
-  { key: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5', embeddingModel: 'nomic-embed-text' },
-  { key: 'custom', label: '自定义', baseUrl: '', model: '', embeddingModel: '' },
+const LLM_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; model: string }[] = [
+  { key: 'off', label: '关闭', baseUrl: '', model: '' },
+  { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { key: 'xai', label: 'xAI', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.5' },
+  { key: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5' },
+  { key: 'custom', label: '自定义', baseUrl: '', model: '' },
+];
+
+const EMBEDDING_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; model: string }[] = [
+  { key: 'off', label: '关闭', baseUrl: '', model: '' },
+  { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'text-embedding-3-small' },
+  { key: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'nomic-embed-text' },
+  { key: 'custom', label: '自定义', baseUrl: '', model: '' },
 ];
 const EXCLUDE_HINT_KEY = 'mudflat.exclude-hint-seen';
 const READING_MODE_KEY = 'mudflat.reading-mode';
@@ -210,11 +219,12 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; action?: ToastAction } | null>(null);
   const toastTimer = useRef(0);
   const [dueCount, setDueCount] = useState(0);
-  // 本书清样入口：书内到期数（随全局 dueCount 变化重查，覆盖同步后/回顾归来）
+  // 本书翻牌入口：书内到期数（随全局 dueCount 变化重查，覆盖同步后/回顾归来）
   const [bookDue, setBookDue] = useState(0);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   // P1.3 搜索继承上下文：默认只在当前书/标签/星标范围内搜，可一键扩到全部卡片
   const [searchAll, setSearchAll] = useState(false);
+  const cardsLoadGen = useRef(0);
   // 长读模式：单栏通读，为「重读一本书的笔记」服务（V 切换，本地记忆）
   const [reading, setReading] = useState(() => {
     try { return localStorage.getItem(READING_MODE_KEY) === '1'; } catch { return false; }
@@ -395,10 +405,12 @@ export default function App() {
   const reloadCards = useCallback(async () => {
     if (view.name !== 'cards') return;
     const q = query.trim();
+    const gen = ++cardsLoadGen.current;
     try {
       if (q) {
         const filter = searchAll ? emptyFilter() : wallFilter();
         const hits = await call<SearchHit[]>('search_cards', { q, filter });
+        if (gen !== cardsLoadGen.current) return;
         setCards(hits.map((h) => h.card));
         setMatchKinds(new Map(hits.map((h) => [h.card.id, h.matchKind])));
         setCardTotal(hits.length);
@@ -409,11 +421,12 @@ export default function App() {
         call<CardRow[]>('query_cards', { filter, limit: PAGE, offset: 0 }),
         call<number>('count_cards', { filter }),
       ]);
+      if (gen !== cardsLoadGen.current) return;
       setCards(rows);
       setMatchKinds(new Map());
       setCardTotal(total);
     } finally {
-      setCardsReady(true);
+      if (gen === cardsLoadGen.current) setCardsReady(true);
     }
   }, [view, query, wallFilter, searchAll]);
 
@@ -465,12 +478,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [view.name]);
 
-  const doSync = useCallback(async () => {
-    if (!hasKey) {
-      showToast('还没有 Key。到设置里粘贴以 wrk- 开头的微信读书 API Key。');
-      setView({ name: 'settings' });
-      return;
-    }
+  const runSync = useCallback(async () => {
+    const firstFill = !hasBooks;
     setSyncing('准备同步…');
     try {
       const chan = new Channel<SyncEventPayload>();
@@ -485,7 +494,9 @@ export default function App() {
       const parts = [`成功 ${summary.booksSynced} 本`];
       if (summary.booksFailed > 0) parts.push(`失败 ${summary.booksFailed} 本`);
       parts.push(`新增 ${summary.added} 张`, `移除 ${summary.removed} 张`);
-      let msg = `同步完成：${parts.join(' · ')}`;
+      let msg = firstFill && summary.added > 0
+        ? `接到墙上：${parts.join(' · ')}。从左边目录挑一本。`
+        : `同步完成：${parts.join(' · ')}`;
       if (summary.failures?.length) {
         const names = summary.failures.map((f) => f.title).slice(0, 3).join('、');
         msg += `\n失败书目：${names}${summary.failures.length > 3 ? ' 等' : ''}，下次同步会自动重试`;
@@ -498,7 +509,23 @@ export default function App() {
     } finally {
       setSyncing(null);
     }
-  }, [hasKey, refreshMeta, reloadCards, showToast]);
+  }, [hasBooks, refreshMeta, reloadCards, showToast]);
+
+  const doSync = useCallback(async () => {
+    if (!hasKey) {
+      showToast('先在墙上贴上以 wrk- 开头的微信读书 API Key。');
+      if (view.name !== 'cards') setView({ name: 'cards', bookId: null });
+      return;
+    }
+    await runSync();
+  }, [hasKey, runSync, showToast, view.name]);
+
+  const saveKeyFromWall = useCallback(async (key: string, thenSync: boolean) => {
+    await call('save_api_key', { key });
+    await refreshMeta();
+    if (thenSync) await runSync();
+    else showToast('API Key 已保存到本机。点同步接进划线。');
+  }, [refreshMeta, runSync, showToast]);
 
   const toggleTagFilter = (id: number) =>
     setSelectedTagIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -626,7 +653,7 @@ export default function App() {
           <button
             className="primary top-sync"
             disabled={!!syncing || !hasKey}
-            title={!hasKey ? '请先到设置填写 API Key' : undefined}
+            title={!hasKey ? '请先在墙上填写 API Key' : undefined}
             onClick={doSync}
           >
             {syncing ?? '同步'}
@@ -679,6 +706,7 @@ export default function App() {
                 <span className="grow">星标项目</span>
               </button>
               <div className="sub-eyebrow">刊物</div>
+              {!books.length && <p className="hint">同步之后，有笔记的书会出现在这里。</p>}
               {books.map((b, i) => (
                 <button
                   key={b.id}
@@ -778,14 +806,14 @@ export default function App() {
                     </>
                   ) : (
                     <div style={{ minWidth: 0 }}>
-                      <div className="head-eyebrow">{starredOnly ? '星标专辑' : '总索引'}</div>
-                      <h2>{starredOnly ? '星标项目' : '全部索引'}</h2>
-                      <div className="head-meta"><span className="card-date">{countLabel}</span></div>
+                      <div className="head-eyebrow">{emptyLibrary ? '创刊' : starredOnly ? '星标专辑' : '总索引'}</div>
+                      <h2>{emptyLibrary ? '尚未接上' : starredOnly ? '星标项目' : '全部索引'}</h2>
+                      {!emptyLibrary && <div className="head-meta"><span className="card-date">{countLabel}</span></div>}
                     </div>
                   )}
                 </div>
                 <div className="head-actions">
-                  {!searching && (
+                  {!searching && !emptyLibrary && (
                     <button
                       className={`ghost view-toggle${readingActive ? ' active' : ''}`}
                       onClick={() => setReading((r) => !r)}
@@ -837,7 +865,7 @@ export default function App() {
                     searchAll={searchAll}
                     query={query.trim()}
                     syncing={syncing}
-                    onSetup={() => setView({ name: 'settings' })}
+                    onSaveKey={saveKeyFromWall}
                     onSync={doSync}
                     onClear={clearFilters}
                     onSearchAll={() => setSearchAll(true)}
@@ -940,7 +968,7 @@ export default function App() {
 
 function EmptyWall({
   ready, needsSetup, hasKey, hasBooks, searching, filtered, searchAll, query, syncing,
-  onSetup, onSync, onClear, onSearchAll, onClearSearch,
+  onSaveKey, onSync, onClear, onSearchAll, onClearSearch,
 }: {
   ready: boolean;
   needsSetup: boolean;
@@ -951,18 +979,89 @@ function EmptyWall({
   searchAll: boolean;
   query: string;
   syncing: string | null;
-  onSetup: () => void;
+  onSaveKey: (key: string, thenSync: boolean) => Promise<void>;
   onSync: () => void;
   onClear: () => void;
   onSearchAll: () => void;
   onClearSearch: () => void;
 }) {
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const save = async (thenSync: boolean) => {
+    const k = key.trim();
+    if (!k) {
+      setErr('先贴上 Key。');
+      return;
+    }
+    if (!/^wrk-/i.test(k)) {
+      setErr('Key 应以 wrk- 开头。到开通页签发后再贴回来。');
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await onSaveKey(k, thenSync);
+    } catch (e) {
+      setErr(explainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!ready) return <p className="hint empty-state">载入卡片…</p>;
   if (needsSetup || (!hasKey && !hasBooks)) {
     return (
       <div className="empty-setup">
         <p className="empty-title">把微信读书的划线接到这面墙上</p>
-        <button className="primary" onClick={onSetup}>填写 API Key</button>
+        <p className="empty-lede">
+          开通 Skills、签发 Key、贴到下面。同步之后，你在微信读书里划过的句子会按书排成这本刊物的内页。
+        </p>
+        <ol className="empty-steps">
+          <li className="empty-step">
+            <span className="empty-step-no" aria-hidden="true">01</span>
+            <div>
+              <p className="empty-step-title">去签发 Key</p>
+              <p className="empty-step-copy">打开微信读书 Skills 开通页，签发以 wrk- 开头的 Key。</p>
+              <button type="button" onClick={() => void openExternal(WEREAD_SKILLS_URL)}>
+                去签发 Key
+              </button>
+            </div>
+          </li>
+          <li className="empty-step">
+            <span className="empty-step-no" aria-hidden="true">02</span>
+            <div>
+              <p className="empty-step-title">贴到本机</p>
+              <p className="empty-step-copy">Key 只存在这台电脑，不会上传。</p>
+              <form onSubmit={(e) => { e.preventDefault(); void save(true); }}>
+                <label className="empty-key-label" htmlFor="empty-api-key">微信读书 API Key</label>
+                <input
+                  id="empty-api-key"
+                  className="empty-key"
+                  type="password"
+                  value={key}
+                  onChange={(e) => { setKey(e.target.value); if (err) setErr(null); }}
+                  placeholder="wrk-..."
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={err ? true : undefined}
+                  aria-describedby={err ? 'empty-key-error' : undefined}
+                  disabled={busy}
+                />
+                <div className="empty-actions">
+                  <button className="primary" type="submit" disabled={busy || !!syncing}>
+                    {busy && !syncing ? '保存中…' : (syncing ?? '保存并同步')}
+                  </button>
+                  <button type="button" className="ghost" disabled={busy || !!syncing} onClick={() => void save(false)}>
+                    只保存
+                  </button>
+                </div>
+                {err && <p className="err" id="empty-key-error" role="alert">{err}</p>}
+              </form>
+            </div>
+          </li>
+        </ol>
       </div>
     );
   }
@@ -970,6 +1069,7 @@ function EmptyWall({
     return (
       <div className="empty-setup">
         <p className="empty-title">Key 已经存好，墙上还是空的</p>
+        <p className="empty-lede">点同步，把书架上有笔记的书接到墙上。第一次可能要一两分钟。</p>
         <button className="primary" onClick={onSync} disabled={!!syncing}>{syncing ?? '同步'}</button>
       </div>
     );
@@ -978,6 +1078,11 @@ function EmptyWall({
     return (
       <div className="empty-setup">
         <p className="empty-title">没有找到「{query}」</p>
+        <p className="empty-lede">
+          {filtered && !searchAll
+            ? '当前范围里没有。换个词，或到全部卡片里再搜一次。'
+            : '换个词再搜一次，或清空检索回到墙上。'}
+        </p>
         {filtered && !searchAll ? (
           <button className="primary" onClick={onSearchAll}>在全部卡片中搜索</button>
         ) : (
@@ -990,6 +1095,7 @@ function EmptyWall({
     return (
       <div className="empty-setup">
         <p className="empty-title">没有符合当前筛选的卡片</p>
+        <p className="empty-lede">这本书、这个标签或星标下暂时没有卡片。</p>
         <button onClick={onClear}>清除筛选</button>
       </div>
     );
@@ -997,6 +1103,7 @@ function EmptyWall({
   return (
     <div className="empty-setup">
       <p className="empty-title">墙上还没有卡片</p>
+      <p className="empty-lede">点同步，把微信读书里的划线接到这面墙上。</p>
       <button className="primary" onClick={onSync} disabled={!hasKey || !!syncing}>{syncing ?? '同步'}</button>
     </div>
   );
@@ -1440,7 +1547,7 @@ function CreateModal({ onClose, onSaved, onToast }: {
 }
 
 // 具名导出供前端交互测试直接渲染（PRD 12.1）
-// book 非空 = 本书清样：队列、剩余数、文案都只围绕这一本书。
+// book 非空 = 本书翻牌：队列、剩余数、文案都只围绕这一本书。
 type ReviewToast = (m: string, action?: { label: string; onClick: () => void }) => void;
 type LastUndo =
   | { kind: 'grade'; card: CardRow; rating: ReviewRating; prev: SrsState; idx: number }
@@ -1486,7 +1593,7 @@ export function ReviewView({ book = null, onToast, onExit }: {
   const idxRef = useRef(idx);
   idxRef.current = idx;
 
-  // 进入页：今日到期总数 + 批次设置（R3.1/R3.2）；本书清样时按书取数
+  // 进入页：今日到期总数 + 批次设置（R3.1/R3.2）；本书翻牌时按书取数
   useEffect(() => {
     let alive = true;
     Promise.all([
@@ -1811,13 +1918,16 @@ export function ReviewView({ book = null, onToast, onExit }: {
     const batchNow = Math.min(batchSize, Math.max(dueTotal, 0));
     return (
       <div className="review">
-        <h2 className="review-title">清样 · 翻牌回顾</h2>
+        <h2 className="review-title">翻牌回顾</h2>
         {scopeLine}
         {!entryReady ? (
-          <p className="hint">载入队列…</p>
+          <div className="deck-done">
+            <p className="review-hint">载入队列…</p>
+          </div>
         ) : dueTotal <= 0 ? (
           <div className="deck-done">
             <p className="review-text">{book ? '这本书当前没有到期卡片' : '当前没有到期卡片'}</p>
+            <p className="review-hint">{book ? '这本书里到期的划线会排进这里。' : '同步之后，到期的划线会排进今日队列。'}</p>
             <button className="primary" onClick={onExit}>返回卡片墙</button>
           </div>
         ) : (
@@ -1841,7 +1951,7 @@ export function ReviewView({ book = null, onToast, onExit }: {
     const allDone = settling.remaining <= 0;
     return (
       <div className="review">
-        <h2 className="review-title">清样 · 翻牌回顾</h2>
+        <h2 className="review-title">翻牌回顾</h2>
         {scopeLine}
         <div className="deck-done">
           <p className="review-text">{allDone ? '今天翻完了' : `本批完成，今天还剩 ${settling.remaining} 张`}</p>
@@ -1866,7 +1976,7 @@ export function ReviewView({ book = null, onToast, onExit }: {
     // 竞态兜底：队列被清空时回到进入页
     return (
       <div className="review">
-        <h2 className="review-title">清样 · 翻牌回顾</h2>
+        <h2 className="review-title">翻牌回顾</h2>
         <div className="deck-done">
           <p className="review-text">当前没有到期卡片</p>
           <button className="primary" onClick={onExit}>返回卡片墙</button>
@@ -1876,8 +1986,8 @@ export function ReviewView({ book = null, onToast, onExit }: {
   }
   const under = [queue[idx + 1], queue[idx + 2]];
   return (
-    <div className="review">
-      <h2 className="review-title">清样 · 翻牌回顾</h2>
+    <div className={`review${scaffold ? ' has-scaffold' : ''}`}>
+      <h2 className="review-title">翻牌回顾</h2>
       {scopeLine}
       <div className="review-top">
         <div className="review-remaining">
@@ -1889,49 +1999,85 @@ export function ReviewView({ book = null, onToast, onExit }: {
       <div className="review-ticks" aria-hidden="true">
         {queue.map((_, i) => <i key={i} className={i < idx ? 'done' : i === idx ? 'now' : ''} />)}
       </div>
-      <div
-        className="deck-stage"
-        role="button"
-        tabIndex={0}
-        aria-label={flipped ? '翻过这张并用 1–4 评分' : '翻面阅读'}
-        onClick={flip}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
-        }}
-      >
-        {under.map((c, k) => c && (
-          <div key={c.id} className={`deck-under u${k + 1}`} aria-hidden="true">
-            <span className="deck-back-frame" />
-          </div>
-        ))}
-        <div className={`deck-card${flying ? ' flying' : ''}`}>
-          <div className={`deck-flipper${flipped ? ' flipped' : ''}`}>
-            <div className="deck-face back">
+      <div className="review-body">
+        <div
+          className="deck-stage"
+          role={scaffold ? undefined : 'button'}
+          tabIndex={scaffold ? undefined : 0}
+          aria-label={scaffold ? undefined : flipped ? '翻过这张并用 1–4 评分' : '翻面阅读'}
+          onClick={scaffold ? undefined : flip}
+          onKeyDown={scaffold ? undefined : (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); }
+          }}
+        >
+          {under.map((c, k) => c && (
+            <div key={c.id} className={`deck-under u${k + 1}`} aria-hidden="true">
               <span className="deck-back-frame" />
-              {questions.get(card.id) ? (
-                <div className="deck-back-inner deck-has-question">
-                  <span className="deck-back-label">建议问题</span>
-                  <p className="deck-question">{questions.get(card.id)}</p>
-                </div>
-              ) : (
-                <div className="deck-back-inner">
-                  <span className="deck-back-label">翻牌</span>
-                  <span className="deck-back-num mono">{String(idx + 1).padStart(2, '0')}<span> / {queue.length}</span></span>
-                </div>
-              )}
-              <span className="deck-back-hint">空格</span>
             </div>
-            <div className="deck-face front">
-              <span className="card-source">{[card.bookTitle, card.chapterTitle].filter(Boolean).join(' / ') || '自建卡'}</span>
-              <div className="deck-front-inner">
-                <p className="review-text">{card.text}</p>
-                {card.abstractText && <blockquote>{card.abstractText}</blockquote>}
-                {card.note && <p className="card-note">{card.note}</p>}
+          ))}
+          <div className={`deck-card${flying ? ' flying' : ''}`}>
+            <div className={`deck-flipper${flipped ? ' flipped' : ''}`}>
+              <div className="deck-face back">
+                <span className="deck-back-frame" />
+                {questions.get(card.id) ? (
+                  <div className="deck-back-inner deck-has-question">
+                    <span className="deck-back-label">建议问题</span>
+                    <p className="deck-question">{questions.get(card.id)}</p>
+                  </div>
+                ) : (
+                  <div className="deck-back-inner">
+                    <span className="deck-back-label">翻牌</span>
+                    <span className="deck-back-num mono">{String(idx + 1).padStart(2, '0')}<span> / {queue.length}</span></span>
+                  </div>
+                )}
+                <span className="deck-back-hint">空格</span>
               </div>
-              {dueNote && <span className="deck-due-note">{dueNote}</span>}
+              <div className="deck-face front">
+                <span className="card-source">{[card.bookTitle, card.chapterTitle].filter(Boolean).join(' / ') || '自建卡'}</span>
+                <div className="deck-front-inner">
+                  <p className="review-text">{card.text}</p>
+                  {card.abstractText && <blockquote>{card.abstractText}</blockquote>}
+                  {card.note && <p className="card-note">{card.note}</p>}
+                </div>
+                {dueNote && <span className="deck-due-note">{dueNote}</span>}
+              </div>
             </div>
           </div>
         </div>
+        {scaffold && (
+          <aside className="scaffold-panel" aria-label="换个角度">
+            <div className="scaffold-copy">
+              <span className="ai-kicker">换个角度</span>
+              {scaffold.paraphrase && <p className="review-text">{scaffold.paraphrase}</p>}
+              {scaffold.example && <p className="scaffold-example">{scaffold.example}</p>}
+              {scaffold.neighbors.map((n) => (
+                <blockquote key={n.id} className="quote-box">{n.text}</blockquote>
+              ))}
+            </div>
+            <div className="review-tools">
+              {llmOn && !scaffold.fromAi && (
+                <button
+                  className="ghost"
+                  disabled={scaffoldBusy}
+                  onClick={async () => {
+                    setScaffoldBusy(true);
+                    try {
+                      const next = await call<Scaffold>('propose_review_scaffold', { cardId: card.id });
+                      setScaffold(next);
+                    } catch (e) {
+                      onToast(explainError(e));
+                    } finally {
+                      setScaffoldBusy(false);
+                    }
+                  }}
+                >
+                  {scaffoldBusy ? '生成中…' : '再讲一句'}
+                </button>
+              )}
+              <button className="primary" onClick={advanceAfterScaffold}>下一张（Enter）</button>
+            </div>
+          </aside>
+        )}
       </div>
       {flipped && !scaffold && (
         <div className="review-rating" role="group" aria-label="记忆评分">
@@ -1962,38 +2108,6 @@ export function ReviewView({ book = null, onToast, onExit }: {
           >
             记下想法
           </button>
-        </div>
-      )}
-      {scaffold && (
-        <div className="scaffold-panel">
-          <span className="ai-kicker">换个角度</span>
-          {scaffold.paraphrase && <p className="review-text">{scaffold.paraphrase}</p>}
-          {scaffold.example && <p className="card-note">{scaffold.example}</p>}
-          {scaffold.neighbors.map((n) => (
-            <blockquote key={n.id} className="quote-box">{n.text}</blockquote>
-          ))}
-          <div className="review-tools">
-            {llmOn && !scaffold.fromAi && (
-              <button
-                className="ghost"
-                disabled={scaffoldBusy}
-                onClick={async () => {
-                  setScaffoldBusy(true);
-                  try {
-                    const next = await call<Scaffold>('propose_review_scaffold', { cardId: card.id });
-                    setScaffold(next);
-                  } catch (e) {
-                    onToast(explainError(e));
-                  } finally {
-                    setScaffoldBusy(false);
-                  }
-                }}
-              >
-                {scaffoldBusy ? '生成中…' : '再讲一句'}
-              </button>
-            )}
-            <button className="primary" onClick={advanceAfterScaffold}>下一张（Enter）</button>
-          </div>
         </div>
       )}
       {excludeTarget && (
@@ -2237,7 +2351,7 @@ export function MindmapView({
           <button className="ghost" onClick={onExit}>返回（Esc）</button>
         </div>
       </div>
-      {!status && <p className="hint">载入线索…</p>}
+      {!status && <p className="review-hint">载入线索…</p>}
       {status?.providerOff && !map && (
         <div className="deck-done">
           <p className="review-text">还没有启用语言模型</p>
@@ -2743,11 +2857,26 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
   const [llmProvider, setLlmProvider] = useState<LlmProvider>('off');
   const [llmBaseUrl, setLlmBaseUrl] = useState('');
   const [llmModel, setLlmModel] = useState('');
-  const [llmEmbedding, setLlmEmbedding] = useState('');
   const [llmKey, setLlmKey] = useState('');
   const [llmTesting, setLlmTesting] = useState(false);
   const [llmResult, setLlmResult] = useState<string | null>(null);
+  const [embProvider, setEmbProvider] = useState<LlmProvider>('off');
+  const [embBaseUrl, setEmbBaseUrl] = useState('');
+  const [embModel, setEmbModel] = useState('');
+  const [embKey, setEmbKey] = useState('');
+  const [embTesting, setEmbTesting] = useState(false);
+  const [embResult, setEmbResult] = useState<string | null>(null);
   const [aiIndex, setAiIndex] = useState<AiIndexInfo | null>(null);
+
+  const applySettings = (s: LlmSettings) => {
+    setLlm(s);
+    setLlmProvider(s.provider);
+    setLlmBaseUrl(s.baseUrl);
+    setLlmModel(s.model);
+    setEmbProvider(s.embeddingProvider);
+    setEmbBaseUrl(s.embeddingBaseUrl);
+    setEmbModel(s.embeddingModel);
+  };
 
   useEffect(() => {
     call<SettingsInfo>('get_settings').then(setStatus).catch(() => {});
@@ -2755,16 +2884,8 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       .then((s) => setBatchSize(s.batchSize))
       .catch(() => setBatchSize(20));
     call<LlmSettings>('get_llm_settings')
-      .then((s) => {
-        setLlm(s);
-        setLlmProvider(s.provider);
-        setLlmBaseUrl(s.baseUrl);
-        setLlmModel(s.model);
-        setLlmEmbedding(s.embeddingModel ?? '');
-      })
-      .catch(() => {
-        setLlm({ provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false });
-      });
+      .then(applySettings)
+      .catch(() => applySettings(emptyLlmSettings()));
     call<AiIndexInfo>('get_ai_index').then(setAiIndex).catch(() => {});
   }, []);
 
@@ -2807,8 +2928,14 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
     provider: llmProvider,
     baseUrl: llmBaseUrl.trim(),
     model: llmModel.trim(),
-    embeddingModel: llmEmbedding.trim(),
     key: llmKey.trim(),
+  });
+
+  const embeddingDraft = (): EmbeddingDraft => ({
+    provider: embProvider,
+    baseUrl: embBaseUrl.trim(),
+    model: embModel.trim(),
+    key: embKey.trim(),
   });
 
   const applyLlmPreset = (next: LlmProvider) => {
@@ -2819,7 +2946,6 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
     if (next === 'off') {
       setLlmBaseUrl('');
       setLlmModel('');
-      setLlmEmbedding('');
       setLlmKey('');
       return;
     }
@@ -2827,11 +2953,28 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       || LLM_PROVIDERS.some((p) => p.baseUrl && p.baseUrl === llmBaseUrl.trim());
     const modelIsPreset = !llmModel.trim()
       || LLM_PROVIDERS.some((p) => p.model && p.model === llmModel.trim());
-    const embedIsPreset = !llmEmbedding.trim()
-      || LLM_PROVIDERS.some((p) => p.embeddingModel && p.embeddingModel === llmEmbedding.trim());
     if (urlIsPreset && preset.baseUrl) setLlmBaseUrl(preset.baseUrl);
     if (modelIsPreset && preset.model) setLlmModel(preset.model);
-    if (embedIsPreset) setLlmEmbedding(preset.embeddingModel);
+  };
+
+  const applyEmbPreset = (next: LlmProvider) => {
+    const preset = EMBEDDING_PROVIDERS.find((p) => p.key === next);
+    setEmbProvider(next);
+    setEmbResult(null);
+    if (!preset) return;
+    if (next === 'off') {
+      setEmbBaseUrl('');
+      setEmbModel('');
+      setEmbKey('');
+      return;
+    }
+    const urlIsPreset = !embBaseUrl.trim()
+      || EMBEDDING_PROVIDERS.some((p) => p.baseUrl && p.baseUrl === embBaseUrl.trim())
+      || LLM_PROVIDERS.some((p) => p.baseUrl && p.baseUrl === embBaseUrl.trim());
+    const modelIsPreset = !embModel.trim()
+      || EMBEDDING_PROVIDERS.some((p) => p.model && p.model === embModel.trim());
+    if (urlIsPreset && preset.baseUrl) setEmbBaseUrl(preset.baseUrl);
+    if (modelIsPreset && preset.model) setEmbModel(preset.model);
   };
 
   const testLlm = async () => {
@@ -2850,11 +2993,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
   const saveLlm = async () => {
     try {
       const saved = await call<LlmSettings>('save_llm_settings', { draft: llmDraft() });
-      setLlm(saved);
-      setLlmProvider(saved.provider);
-      setLlmBaseUrl(saved.baseUrl);
-      setLlmModel(saved.model);
-      setLlmEmbedding(saved.embeddingModel ?? '');
+      applySettings(saved);
       setLlmKey('');
       onToast(saved.provider === 'off' ? '已关闭语言模型。' : '语言模型已保存到本机。');
     } catch (e) {
@@ -2864,15 +3003,47 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
 
   const clearLlm = async () => {
     try {
-      await call('clear_llm_settings');
-      setLlm({ provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false });
-      setLlmProvider('off');
-      setLlmBaseUrl('');
-      setLlmModel('');
-      setLlmEmbedding('');
+      const saved = await call<LlmSettings>('clear_llm_settings');
+      applySettings(saved);
       setLlmKey('');
       setLlmResult(null);
       onToast('已清除语言模型配置');
+    } catch (e) {
+      onToast(explainError(e));
+    }
+  };
+
+  const testEmbedding = async () => {
+    setEmbTesting(true);
+    setEmbResult(null);
+    try {
+      const msg = await call<string>('test_embedding_connection', { draft: embeddingDraft() });
+      setEmbResult(msg);
+    } catch (e) {
+      setEmbResult(`失败：${explainError(e)}`);
+    } finally {
+      setEmbTesting(false);
+    }
+  };
+
+  const saveEmbedding = async () => {
+    try {
+      const saved = await call<LlmSettings>('save_embedding_settings', { draft: embeddingDraft() });
+      applySettings(saved);
+      setEmbKey('');
+      onToast(saved.embeddingProvider === 'off' ? '已关闭向量检索。' : '向量模型已保存到本机。');
+    } catch (e) {
+      onToast(explainError(e));
+    }
+  };
+
+  const clearEmbedding = async () => {
+    try {
+      const saved = await call<LlmSettings>('clear_embedding_settings');
+      applySettings(saved);
+      setEmbKey('');
+      setEmbResult(null);
+      onToast('已清除向量模型配置');
     } catch (e) {
       onToast(explainError(e));
     }
@@ -2937,7 +3108,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       </section>
       <section>
         <h3>四、语言模型</h3>
-        <p className="hint">默认关闭。线索发当前书摘录，问题面只发本卡，回忆支架发本卡与同章相邻卡。向量在本机保存；无向量模型时仍可用规则版相似卡。</p>
+        <p className="hint">默认关闭。线索发当前书摘录，问题面只发本卡，回忆支架发本卡与同章相邻卡。</p>
         <div className="row batch-options" role="group" aria-label="语言模型供应商">
           {LLM_PROVIDERS.map((p) => (
             <button
@@ -2969,14 +3140,6 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
               placeholder={LLM_PROVIDERS.find((p) => p.key === llmProvider)?.model || '模型名'}
               aria-label="语言模型名"
             />
-            <label className="field-label" htmlFor="llm-embed">向量模型（可选）</label>
-            <input
-              id="llm-embed"
-              value={llmEmbedding}
-              onChange={(e) => setLlmEmbedding(e.target.value)}
-              placeholder={LLM_PROVIDERS.find((p) => p.key === llmProvider)?.embeddingModel || '留空则不做语义检索'}
-              aria-label="向量模型名"
-            />
             <label className="field-label" htmlFor="llm-key">API Key</label>
             <input
               id="llm-key"
@@ -3003,6 +3166,74 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
           <button className="ghost" onClick={clearLlm} disabled={!llm || (llm.provider === 'off' && !llm.hasKey)}>清除</button>
         </div>
         {llmResult && <p className={llmResult.startsWith('失败') ? 'err' : 'ok'}>{llmResult}</p>}
+      </section>
+      <section>
+        <h3>五、向量检索</h3>
+        <p className="hint">用于搜索里的「意思相关」和卡片上的「找相似卡」。可与上面的语言模型用不同供应商——例如主模型走 xAI，向量走 OpenAI 或本机 Ollama。向量在本机保存；关闭后仍可用规则版相似卡。</p>
+        <div className="row batch-options" role="group" aria-label="向量模型供应商">
+          {EMBEDDING_PROVIDERS.map((p) => (
+            <button
+              key={p.key}
+              className={embProvider === p.key ? 'active' : ''}
+              aria-pressed={embProvider === p.key}
+              aria-label={`向量 · ${p.label}`}
+              disabled={llm === null}
+              onClick={() => applyEmbPreset(p.key)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {embProvider !== 'off' && (
+          <>
+            <label className="field-label" htmlFor="emb-base">接口地址</label>
+            <input
+              id="emb-base"
+              value={embBaseUrl}
+              onChange={(e) => setEmbBaseUrl(e.target.value)}
+              placeholder={EMBEDDING_PROVIDERS.find((p) => p.key === embProvider)?.baseUrl || 'https://api.example.com/v1'}
+              aria-label="向量模型接口地址"
+            />
+            <label className="field-label" htmlFor="emb-model">向量模型</label>
+            <input
+              id="emb-model"
+              value={embModel}
+              onChange={(e) => setEmbModel(e.target.value)}
+              placeholder={EMBEDDING_PROVIDERS.find((p) => p.key === embProvider)?.model || '向量模型名'}
+              aria-label="向量模型名"
+            />
+            <label className="field-label" htmlFor="emb-key">API Key</label>
+            <input
+              id="emb-key"
+              type="password"
+              value={embKey}
+              onChange={(e) => setEmbKey(e.target.value)}
+              placeholder={
+                llm?.hasEmbeddingKey
+                  ? '已保存，留空则沿用'
+                  : (embProvider === llmProvider && embBaseUrl.trim() === llmBaseUrl.trim() && llm?.hasKey
+                    ? '留空则沿用上方语言模型 Key'
+                    : (embProvider === 'ollama' ? '本机可留空' : 'sk-...'))
+              }
+              aria-label="向量模型 API Key"
+            />
+            {(embProvider === 'ollama' || embProvider === 'custom') && (
+              <p className="hint">
+                {embProvider === 'ollama'
+                  ? 'Ollama 默认走本机 11434 端口，一般不用 Key。请先 pull 对应向量模型，例如 nomic-embed-text。'
+                  : '兼容 OpenAI 的 /v1/embeddings 即可。非本机地址必须是 https。'}
+              </p>
+            )}
+          </>
+        )}
+        <div className="row">
+          {embProvider !== 'off' && (
+            <button onClick={testEmbedding} disabled={embTesting || llm === null}>{embTesting ? '测试中…' : '测试向量连接'}</button>
+          )}
+          <button className="primary" onClick={saveEmbedding} disabled={llm === null}>保存向量配置</button>
+          <button className="ghost" onClick={clearEmbedding} disabled={!llm || (llm.embeddingProvider === 'off' && !llm.hasEmbeddingKey)}>清除向量配置</button>
+        </div>
+        {embResult && <p className={embResult.startsWith('失败') ? 'err' : 'ok'}>{embResult}</p>}
         {aiIndex && (aiIndex.embeddings > 0 || aiIndex.artifacts > 0) && (
           <p className="hint">已索引 {aiIndex.embeddings} 张向量 · {aiIndex.artifacts} 条派生</p>
         )}
@@ -3025,7 +3256,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
         </div>
       </section>
       <section>
-        <h3>五、关于</h3>
+        <h3>六、关于</h3>
         <p className="hint">数据目录：{status?.dataDir ?? '未知'}（mudflat.db）</p>
       </section>
     </div>

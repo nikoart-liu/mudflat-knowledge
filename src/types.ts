@@ -119,16 +119,38 @@ export interface LlmSettings {
   provider: LlmProvider;
   baseUrl: string;
   model: string;
-  embeddingModel: string;
   hasKey: boolean;
+  embeddingProvider: LlmProvider;
+  embeddingBaseUrl: string;
+  embeddingModel: string;
+  hasEmbeddingKey: boolean;
 }
 
 export interface LlmDraft {
   provider: LlmProvider;
   baseUrl: string;
   model: string;
-  embeddingModel: string;
   key: string;
+}
+
+export interface EmbeddingDraft {
+  provider: LlmProvider;
+  baseUrl: string;
+  model: string;
+  key: string;
+}
+
+export function emptyLlmSettings(): LlmSettings {
+  return {
+    provider: 'off',
+    baseUrl: '',
+    model: '',
+    hasKey: false,
+    embeddingProvider: 'off',
+    embeddingBaseUrl: '',
+    embeddingModel: '',
+    hasEmbeddingKey: false,
+  };
 }
 
 export type MatchKind = 'lexical' | 'semantic' | 'both';

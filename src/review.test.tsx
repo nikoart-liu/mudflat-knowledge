@@ -79,7 +79,7 @@ function mockBackend() {
       case 'list_accepted_questions':
         return [];
       case 'get_llm_settings':
-        return { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
+        return { provider: 'off', baseUrl: '', model: '', hasKey: false, embeddingProvider: 'off', embeddingBaseUrl: '', embeddingModel: '', hasEmbeddingKey: false };
       case 'get_review_scaffold':
         return { paraphrase: null, example: null, neighbors: [], sourceCardIds: [], fromAi: false };
       default:
@@ -324,7 +324,7 @@ describe('ReviewView 移出回顾（R2）', () => {
   });
 });
 
-describe('ReviewView 本书清样', () => {
+describe('ReviewView 本书翻牌', () => {
   it('到期查询与取卡都带 bookId，文案与范围行指向本书', async () => {
     backend.dueCount = 2;
     backend.queue = [card(1, '本书卡')];
@@ -332,6 +332,8 @@ describe('ReviewView 本书清样', () => {
       <ReviewView book={{ id: 7, title: '置身事内' }} onToast={vi.fn()} onExit={vi.fn()} />,
     );
 
+    expect(screen.getByRole('heading', { name: '翻牌回顾' })).toBeTruthy();
+    expect(screen.queryByText(/清样/)).toBeNull();
     expect(await screen.findByText(/本书到期 2 张/)).toBeTruthy();
     expect(callMock).toHaveBeenCalledWith('get_due_count', { bookId: 7 });
 

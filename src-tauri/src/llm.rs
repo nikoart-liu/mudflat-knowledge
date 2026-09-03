@@ -1,8 +1,9 @@
-//! 语言模型供应商配置：与微信读书 Key 分开存放。
+//! 语言模型与向量模型配置：与微信读书 Key 分开存放。
 //!
-//! - 非密钥：`llm.json`（provider / baseUrl / model）
-//! - 密钥：`llm.key`（0600，与 api.key 同一套原子写入）
+//! - 非密钥：`llm.json`（chat 与 embedding 可走不同供应商）
+//! - 密钥：`llm.key`、`llm.embedding.key`（0600，与 api.key 同一套原子写入）
 //! 默认关闭。http 只允许回环地址；其余必须 https。
+//! 向量可单独启用：主模型供应商（如 xAI）不必提供 embeddings。
 
 use std::fs;
 use std::io::Write;
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "llm.json";
 const KEY_FILE: &str = "llm.key";
+const EMBEDDING_KEY_FILE: &str = "llm.embedding.key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -65,11 +67,32 @@ impl Provider {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct EmbeddingConfig {
+    pub provider: Provider,
+    pub base_url: String,
+    pub model: String,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            provider: Provider::Off,
+            base_url: String::new(),
+            model: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
     pub provider: Provider,
     pub base_url: String,
     pub model: String,
     #[serde(default)]
+    pub embedding: EmbeddingConfig,
+    /// 旧文件只存了 embeddingModel 字符串；读入时迁到 embedding，不再写出。
+    #[serde(default, skip_serializing)]
     pub embedding_model: String,
 }
 
@@ -79,8 +102,30 @@ impl Default for LlmConfig {
             provider: Provider::Off,
             base_url: String::new(),
             model: String::new(),
+            embedding: EmbeddingConfig::default(),
             embedding_model: String::new(),
         }
+    }
+}
+
+impl LlmConfig {
+    fn after_load(mut self) -> Self {
+        if self.embedding.provider == Provider::Off
+            && !self.embedding_model.trim().is_empty()
+            && matches!(self.provider, Provider::Openai | Provider::Ollama | Provider::Custom)
+        {
+            self.embedding = EmbeddingConfig {
+                provider: self.provider,
+                base_url: self.base_url.clone(),
+                model: self.embedding_model.trim().to_string(),
+            };
+        }
+        self.embedding_model.clear();
+        self
+    }
+
+    fn both_off(&self) -> bool {
+        self.provider == Provider::Off && self.embedding.provider == Provider::Off
     }
 }
 
@@ -90,11 +135,14 @@ pub struct LlmSettings {
     pub provider: Provider,
     pub base_url: String,
     pub model: String,
-    pub embedding_model: String,
     pub has_key: bool,
+    pub embedding_provider: Provider,
+    pub embedding_base_url: String,
+    pub embedding_model: String,
+    pub has_embedding_key: bool,
 }
 
-/// 用户保存/测试时提交的草稿。key 为空表示「沿用已存密钥」。
+/// 用户保存/测试语言模型时提交的草稿。key 为空表示「沿用已存密钥」。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmDraft {
@@ -104,7 +152,18 @@ pub struct LlmDraft {
     #[serde(default)]
     pub model: String,
     #[serde(default)]
-    pub embedding_model: String,
+    pub key: String,
+}
+
+/// 用户保存/测试向量模型时提交的草稿。与语言模型独立。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingDraft {
+    pub provider: Provider,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
     #[serde(default)]
     pub key: String,
 }
@@ -124,15 +183,43 @@ pub fn key_path(dir: &Path) -> PathBuf {
     dir.join(KEY_FILE)
 }
 
+pub fn embedding_key_path(dir: &Path) -> PathBuf {
+    dir.join(EMBEDDING_KEY_FILE)
+}
+
+fn to_settings(dir: &Path, config: &LlmConfig) -> LlmSettings {
+    LlmSettings {
+        provider: config.provider,
+        base_url: config.base_url.clone(),
+        model: config.model.clone(),
+        has_key: has_key(dir),
+        embedding_provider: config.embedding.provider,
+        embedding_base_url: config.embedding.base_url.clone(),
+        embedding_model: config.embedding.model.clone(),
+        has_embedding_key: has_embedding_key(dir, config),
+    }
+}
+
+fn empty_settings() -> LlmSettings {
+    LlmSettings {
+        provider: Provider::Off,
+        base_url: String::new(),
+        model: String::new(),
+        has_key: false,
+        embedding_provider: Provider::Off,
+        embedding_base_url: String::new(),
+        embedding_model: String::new(),
+        has_embedding_key: false,
+    }
+}
+
+pub fn embedding_ready(cfg: &LlmConfig) -> bool {
+    cfg.embedding.provider != Provider::Off && !cfg.embedding.model.trim().is_empty()
+}
+
 pub fn load_settings(dir: &Path) -> LlmResult<LlmSettings> {
     let config = load_config(dir)?;
-    Ok(LlmSettings {
-        provider: config.provider,
-        base_url: config.base_url,
-        model: config.model,
-        embedding_model: config.embedding_model,
-        has_key: has_key(dir),
-    })
+    Ok(to_settings(dir, &config))
 }
 
 pub fn load_config(dir: &Path) -> LlmResult<LlmConfig> {
@@ -140,7 +227,7 @@ pub fn load_config(dir: &Path) -> LlmResult<LlmConfig> {
         Ok(s) => {
             let cfg: LlmConfig = serde_json::from_str(&s)
                 .map_err(|e| LlmError::Invalid(format!("语言模型配置损坏: {e}")))?;
-            Ok(cfg)
+            Ok(cfg.after_load())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(LlmConfig::default()),
         Err(e) => Err(e.into()),
@@ -151,64 +238,142 @@ pub fn has_key(dir: &Path) -> bool {
     get_key(dir).is_ok()
 }
 
-pub fn get_key(dir: &Path) -> LlmResult<String> {
-    match fs::read_to_string(key_path(dir)) {
+fn read_secret(path: PathBuf, missing: &str) -> LlmResult<String> {
+    match fs::read_to_string(&path) {
         Ok(s) => {
             let s = s.trim().to_string();
             if s.is_empty() {
-                Err(LlmError::Invalid("未保存语言模型 API Key".into()))
+                Err(LlmError::Invalid(missing.into()))
             } else {
                 Ok(s)
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(LlmError::Invalid("未保存语言模型 API Key".into()))
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(LlmError::Invalid(missing.into())),
         Err(e) => Err(e.into()),
+    }
+}
+
+pub fn get_key(dir: &Path) -> LlmResult<String> {
+    read_secret(key_path(dir), "未保存语言模型 API Key")
+}
+
+pub fn get_embedding_key(dir: &Path) -> LlmResult<String> {
+    read_secret(embedding_key_path(dir), "未保存向量模型 API Key")
+}
+
+fn same_endpoint(chat: &LlmConfig, embedding: &EmbeddingConfig) -> bool {
+    embedding.provider != Provider::Off
+        && embedding.provider == chat.provider
+        && embedding.base_url == chat.base_url
+}
+
+fn has_embedding_key(dir: &Path, cfg: &LlmConfig) -> bool {
+    if get_embedding_key(dir).is_ok() {
+        return true;
+    }
+    same_endpoint(cfg, &cfg.embedding) && has_key(dir)
+}
+
+fn embedding_key_for(dir: &Path, cfg: &LlmConfig) -> String {
+    match get_embedding_key(dir) {
+        Ok(k) => k,
+        Err(_) if same_endpoint(cfg, &cfg.embedding) => get_key(dir).unwrap_or_default(),
+        Err(_) => String::new(),
     }
 }
 
 pub fn save(dir: &Path, draft: &LlmDraft, existing_key: Option<&str>) -> LlmResult<LlmSettings> {
     let normalized = normalize_draft(draft, existing_key)?;
-    fs::create_dir_all(dir)?;
-    if normalized.config.provider == Provider::Off {
+    let mut cfg = load_config(dir)?;
+    cfg.provider = normalized.config.provider;
+    cfg.base_url = normalized.config.base_url;
+    cfg.model = normalized.config.model;
+
+    if cfg.both_off() {
         clear(dir)?;
-        return Ok(LlmSettings {
-            provider: Provider::Off,
-            base_url: String::new(),
-            model: String::new(),
-            embedding_model: String::new(),
-            has_key: false,
-        });
+        return Ok(empty_settings());
     }
-    write_json(dir, &normalized.config)?;
-    if let Some(key) = normalized.key.as_deref() {
+
+    fs::create_dir_all(dir)?;
+    write_json(dir, &cfg)?;
+    if cfg.provider == Provider::Off {
+        let _ = fs::remove_file(key_path(dir));
+    } else if let Some(key) = normalized.key.as_deref() {
         if key.is_empty() {
             let _ = fs::remove_file(key_path(dir));
         } else {
             write_secret(dir, key)?;
         }
     }
-    Ok(LlmSettings {
-        provider: normalized.config.provider,
-        base_url: normalized.config.base_url,
-        model: normalized.config.model,
-        embedding_model: normalized.config.embedding_model,
-        has_key: has_key(dir),
-    })
+    Ok(to_settings(dir, &cfg))
+}
+
+pub fn save_embedding(
+    dir: &Path,
+    draft: &EmbeddingDraft,
+    existing_key: Option<&str>,
+) -> LlmResult<LlmSettings> {
+    let mut cfg = load_config(dir)?;
+    let chat_key = get_key(dir).ok();
+    let normalized = normalize_embedding_draft(draft, existing_key, &cfg, chat_key.as_deref())?;
+    cfg.embedding = normalized.config;
+
+    if cfg.both_off() {
+        clear(dir)?;
+        return Ok(empty_settings());
+    }
+
+    fs::create_dir_all(dir)?;
+    write_json(dir, &cfg)?;
+    if cfg.embedding.provider == Provider::Off {
+        let _ = fs::remove_file(embedding_key_path(dir));
+    } else if let Some(key) = normalized.key.as_deref() {
+        if key.is_empty() {
+            let _ = fs::remove_file(embedding_key_path(dir));
+        } else {
+            write_embedding_secret(dir, key)?;
+        }
+    }
+    Ok(to_settings(dir, &cfg))
 }
 
 pub fn clear(dir: &Path) -> LlmResult<()> {
-    match fs::remove_file(config_path(dir)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
+    for path in [config_path(dir), key_path(dir), embedding_key_path(dir)] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
     }
-    match fs::remove_file(key_path(dir)) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
+    Ok(())
+}
+
+pub fn clear_chat(dir: &Path) -> LlmResult<LlmSettings> {
+    let mut cfg = load_config(dir)?;
+    cfg.provider = Provider::Off;
+    cfg.base_url.clear();
+    cfg.model.clear();
+    if cfg.both_off() {
+        clear(dir)?;
+        return Ok(empty_settings());
     }
+    fs::create_dir_all(dir)?;
+    write_json(dir, &cfg)?;
+    let _ = fs::remove_file(key_path(dir));
+    Ok(to_settings(dir, &cfg))
+}
+
+pub fn clear_embedding(dir: &Path) -> LlmResult<LlmSettings> {
+    let mut cfg = load_config(dir)?;
+    cfg.embedding = EmbeddingConfig::default();
+    if cfg.both_off() {
+        clear(dir)?;
+        return Ok(empty_settings());
+    }
+    fs::create_dir_all(dir)?;
+    write_json(dir, &cfg)?;
+    let _ = fs::remove_file(embedding_key_path(dir));
+    Ok(to_settings(dir, &cfg))
 }
 
 /// 测试连接用的 OpenAI 兼容 models 端点。
@@ -271,7 +436,6 @@ pub fn normalize_draft(draft: &LlmDraft, existing_key: Option<&str>) -> LlmResul
 
     let base_url = resolve_base_url(draft.provider, &draft.base_url)?;
     let model = resolve_model(draft.provider, &draft.model)?;
-    let embedding_model = resolve_embedding_model(draft.provider, &draft.embedding_model)?;
     let incoming = draft.key.trim();
     let key = if !incoming.is_empty() {
         Some(incoming.to_string())
@@ -286,7 +450,59 @@ pub fn normalize_draft(draft: &LlmDraft, existing_key: Option<&str>) -> LlmResul
             provider: draft.provider,
             base_url,
             model,
-            embedding_model,
+            embedding: EmbeddingConfig::default(),
+            embedding_model: String::new(),
+        },
+        key,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedEmbedding {
+    pub config: EmbeddingConfig,
+    /// None = 沿用已存密钥；Some("") = 明确无密钥（仅 Ollama 回环允许）
+    pub key: Option<String>,
+}
+
+pub fn normalize_embedding_draft(
+    draft: &EmbeddingDraft,
+    existing_key: Option<&str>,
+    chat: &LlmConfig,
+    chat_key: Option<&str>,
+) -> LlmResult<NormalizedEmbedding> {
+    if draft.provider == Provider::Off {
+        return Ok(NormalizedEmbedding {
+            config: EmbeddingConfig::default(),
+            key: Some(String::new()),
+        });
+    }
+    if draft.provider == Provider::Xai {
+        return Err(LlmError::Invalid(
+            "xAI 不提供向量模型。请改用 OpenAI、Ollama 或自定义接口。".into(),
+        ));
+    }
+
+    let base_url = resolve_base_url(draft.provider, &draft.base_url)?;
+    let model = resolve_embedding_model(draft.provider, &draft.model)?;
+    let incoming = draft.key.trim();
+    let key = if !incoming.is_empty() {
+        Some(incoming.to_string())
+    } else {
+        None
+    };
+    let reuse_chat = draft.provider == chat.provider && base_url == chat.base_url;
+    let effective = key
+        .as_deref()
+        .or(existing_key)
+        .or(if reuse_chat { chat_key } else { None })
+        .unwrap_or("");
+    require_key(draft.provider, &base_url, effective)?;
+
+    Ok(NormalizedEmbedding {
+        config: EmbeddingConfig {
+            provider: draft.provider,
+            base_url,
+            model,
         },
         key,
     })
@@ -306,6 +522,24 @@ pub fn load_runtime(dir: &Path) -> LlmResult<(LlmConfig, String)> {
     };
     require_key(cfg.provider, &cfg.base_url, &key)?;
     Ok((cfg, key))
+}
+
+/// 向量检索用的已保存配置。与主模型独立，缺配置时由调用方降级到规则检索。
+pub fn load_embedding_runtime(dir: &Path) -> LlmResult<(EmbeddingConfig, String)> {
+    let cfg = load_config(dir)?;
+    if !embedding_ready(&cfg) {
+        return Err(LlmError::Invalid(
+            "还没有启用向量模型。到设置「五、向量检索」选择供应商并保存。".into(),
+        ));
+    }
+    if cfg.embedding.provider == Provider::Xai {
+        return Err(LlmError::Invalid(
+            "xAI 不提供向量模型。到设置「五、向量检索」改选 OpenAI、Ollama 或自定义。".into(),
+        ));
+    }
+    let key = embedding_key_for(dir, &cfg);
+    require_key(cfg.embedding.provider, &cfg.embedding.base_url, &key)?;
+    Ok((cfg.embedding, key))
 }
 
 pub fn chat_url(base_url: &str) -> String {
@@ -339,7 +573,11 @@ fn resolve_embedding_model(provider: Provider, raw: &str) -> LlmResult<String> {
         }
         return Ok(trimmed.to_string());
     }
-    Ok(provider.default_embedding_model().to_string())
+    let def = provider.default_embedding_model();
+    if def.is_empty() {
+        return Err(LlmError::Invalid("请填写向量模型名".into()));
+    }
+    Ok(def.to_string())
 }
 
 fn resolve_model(provider: Provider, raw: &str) -> LlmResult<String> {
@@ -427,6 +665,13 @@ fn write_secret(dir: &Path, key: &str) -> LlmResult<()> {
     Ok(())
 }
 
+fn write_embedding_secret(dir: &Path, key: &str) -> LlmResult<()> {
+    let path = embedding_key_path(dir);
+    let tmp = dir.join(format!("{EMBEDDING_KEY_FILE}.tmp"));
+    atomic_write(&tmp, &path, key.as_bytes())?;
+    Ok(())
+}
+
 fn atomic_write(tmp: &Path, final_path: &Path, bytes: &[u8]) -> LlmResult<()> {
     {
         let mut f = fs::OpenOptions::new()
@@ -464,7 +709,15 @@ mod tests {
             provider,
             base_url: base.into(),
             model: model.into(),
-            embedding_model: String::new(),
+            key: key.into(),
+        }
+    }
+
+    fn embed_draft(provider: Provider, base: &str, model: &str, key: &str) -> EmbeddingDraft {
+        EmbeddingDraft {
+            provider,
+            base_url: base.into(),
+            model: model.into(),
             key: key.into(),
         }
     }
@@ -494,7 +747,7 @@ mod tests {
         let n = normalize_draft(&draft(Provider::Openai, "", "", "sk-abc"), None).unwrap();
         assert_eq!(n.config.base_url, "https://api.openai.com/v1");
         assert_eq!(n.config.model, "gpt-4o-mini");
-        assert_eq!(n.config.embedding_model, "text-embedding-3-small");
+        assert_eq!(n.config.embedding.provider, Provider::Off);
         assert_eq!(n.key.as_deref(), Some("sk-abc"));
 
         let err = normalize_draft(&draft(Provider::Openai, "", "", ""), None).unwrap_err();
@@ -577,7 +830,123 @@ mod tests {
         let n = normalize_draft(&draft(Provider::Xai, "", "", "xai-key"), None).unwrap();
         assert_eq!(n.config.base_url, "https://api.x.ai/v1");
         assert_eq!(n.config.model, "grok-4.5");
-        assert_eq!(n.config.embedding_model, "");
+        assert_eq!(n.config.embedding.provider, Provider::Off);
+    }
+
+    #[test]
+    fn xai_chat_can_pair_with_openai_embedding() {
+        let dir = temp_dir("xai-embed");
+        save(&dir, &draft(Provider::Xai, "", "", "xai-key"), None).unwrap();
+        let out = save_embedding(&dir, &embed_draft(Provider::Openai, "", "", "sk-embed"), None).unwrap();
+        assert_eq!(out.provider, Provider::Xai);
+        assert_eq!(out.model, "grok-4.5");
+        assert_eq!(out.embedding_provider, Provider::Openai);
+        assert_eq!(out.embedding_model, "text-embedding-3-small");
+        assert_eq!(out.embedding_base_url, "https://api.openai.com/v1");
+        assert!(out.has_key);
+        assert!(out.has_embedding_key);
+
+        let (chat, chat_key) = load_runtime(&dir).unwrap();
+        assert_eq!(chat.provider, Provider::Xai);
+        assert_eq!(chat_key, "xai-key");
+        let (emb, emb_key) = load_embedding_runtime(&dir).unwrap();
+        assert_eq!(emb.model, "text-embedding-3-small");
+        assert_eq!(emb_key, "sk-embed");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn turning_chat_off_keeps_embedding() {
+        let dir = temp_dir("chat-off-keeps-embed");
+        save(&dir, &draft(Provider::Xai, "", "", "xai-key"), None).unwrap();
+        save_embedding(&dir, &embed_draft(Provider::Openai, "", "", "sk-embed"), None).unwrap();
+        let out = save(&dir, &draft(Provider::Off, "", "", ""), None).unwrap();
+        assert_eq!(out.provider, Provider::Off);
+        assert!(!out.has_key);
+        assert_eq!(out.embedding_provider, Provider::Openai);
+        assert_eq!(out.embedding_model, "text-embedding-3-small");
+        assert!(out.has_embedding_key);
+        assert!(config_path(&dir).exists());
+        assert!(!key_path(&dir).exists());
+        assert!(embedding_key_path(&dir).exists());
+        assert!(load_runtime(&dir).is_err());
+        let (emb, key) = load_embedding_runtime(&dir).unwrap();
+        assert_eq!(emb.provider, Provider::Openai);
+        assert_eq!(key, "sk-embed");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn embedding_reuses_chat_key_on_same_endpoint() {
+        let dir = temp_dir("reuse-key");
+        save(&dir, &draft(Provider::Openai, "", "gpt-4o-mini", "sk-shared"), None).unwrap();
+        let out = save_embedding(&dir, &embed_draft(Provider::Openai, "", "", ""), None).unwrap();
+        assert_eq!(out.embedding_provider, Provider::Openai);
+        assert_eq!(out.embedding_model, "text-embedding-3-small");
+        assert!(out.has_embedding_key);
+        assert!(!embedding_key_path(&dir).exists());
+        let (_, key) = load_embedding_runtime(&dir).unwrap();
+        assert_eq!(key, "sk-shared");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn embedding_rejects_xai() {
+        let err = normalize_embedding_draft(
+            &embed_draft(Provider::Xai, "", "", "xai-key"),
+            None,
+            &LlmConfig::default(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("不提供向量模型"));
+    }
+
+    #[test]
+    fn legacy_openai_embedding_model_migrates() {
+        let dir = temp_dir("legacy-embed");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            config_path(&dir),
+            r#"{
+              "provider": "openai",
+              "baseUrl": "https://api.openai.com/v1",
+              "model": "gpt-4o-mini",
+              "embeddingModel": "text-embedding-3-small"
+            }"#,
+        )
+        .unwrap();
+        let cfg = load_config(&dir).unwrap();
+        assert_eq!(cfg.embedding.provider, Provider::Openai);
+        assert_eq!(cfg.embedding.model, "text-embedding-3-small");
+        assert_eq!(cfg.embedding.base_url, "https://api.openai.com/v1");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn embedding_only_does_not_enable_chat() {
+        let dir = temp_dir("embed-only");
+        let out = save_embedding(&dir, &embed_draft(Provider::Ollama, "", "", ""), None).unwrap();
+        assert_eq!(out.provider, Provider::Off);
+        assert_eq!(out.embedding_provider, Provider::Ollama);
+        assert_eq!(out.embedding_model, "nomic-embed-text");
+        assert!(load_runtime(&dir).is_err());
+        let (emb, key) = load_embedding_runtime(&dir).unwrap();
+        assert_eq!(emb.provider, Provider::Ollama);
+        assert!(key.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clear_chat_leaves_embedding() {
+        let dir = temp_dir("clear-chat");
+        save(&dir, &draft(Provider::Xai, "", "", "xai-key"), None).unwrap();
+        save_embedding(&dir, &embed_draft(Provider::Openai, "", "", "sk-embed"), None).unwrap();
+        let out = clear_chat(&dir).unwrap();
+        assert_eq!(out.provider, Provider::Off);
+        assert_eq!(out.embedding_provider, Provider::Openai);
+        assert!(out.has_embedding_key);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -590,6 +590,20 @@ fn apply_card_filter(filter: &CardFilter, conds: &mut Vec<String>, params: &mut 
     }
 }
 
+/// 当前筛选下全部可见卡 id，无条数上限。语义检索用它，而不是墙的最近 2000 张。
+pub fn query_card_ids(conn: &Connection, filter: &CardFilter) -> DbResult<HashSet<i64>> {
+    let mut conds: Vec<String> = vec!["c.deleted=0".into()];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+    apply_card_filter(filter, &mut conds, &mut params);
+    let sql = format!("SELECT c.id FROM cards c WHERE {}", conds.join(" AND "));
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let ids = stmt
+        .query_map(refs.as_slice(), |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<HashSet<i64>>>()?;
+    Ok(ids)
+}
+
 pub fn query_cards(conn: &Connection, filter: &CardFilter, limit: i64, offset: i64) -> DbResult<Vec<CardRow>> {
     let mut conds: Vec<String> = vec!["c.deleted=0".into()];
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
@@ -852,7 +866,7 @@ pub fn ensure_review_row(conn: &Connection, card_id: i64, due_now: i64) -> DbRes
     Ok(())
 }
 
-/// 到期卡片。book_id 传入时只取该书（本书清样）；None 为整馆。
+/// 到期卡片。book_id 传入时只取该书（本书翻牌）；None 为整馆。
 pub fn due_cards(conn: &Connection, now: i64, limit: i64, book_id: Option<i64>) -> DbResult<Vec<CardRow>> {
     // book_id 是服务端 i64，走 format! 与既有 {now}/{limit} 同一约束
     let scope = book_id.map(|id| format!(" AND c.book_id={id}")).unwrap_or_default();
@@ -1019,7 +1033,7 @@ mod tests {
 
         let rows = due_cards(&conn, NOW, 30, Some(b1)).unwrap();
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|c| c.book_id == Some(b1)), "本书清样不得混入其他书");
+        assert!(rows.iter().all(|c| c.book_id == Some(b1)), "本书翻牌不得混入其他书");
 
         let all = due_cards(&conn, NOW, 30, None).unwrap();
         assert_eq!(all.len(), 3, "None 仍是整馆队列");

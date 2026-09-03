@@ -109,9 +109,27 @@ async fn save_llm_settings(app: tauri::AppHandle, draft: llm::LlmDraft) -> Resul
 }
 
 #[tauri::command]
-async fn clear_llm_settings(app: tauri::AppHandle) -> Result<(), String> {
+async fn clear_llm_settings(app: tauri::AppHandle) -> Result<llm::LlmSettings, String> {
     let dir = data_dir(&app)?;
-    tokio::task::block_in_place(|| llm::clear(&dir).map_err(|e| e.to_string()))
+    tokio::task::block_in_place(|| llm::clear_chat(&dir).map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+async fn save_embedding_settings(
+    app: tauri::AppHandle,
+    draft: llm::EmbeddingDraft,
+) -> Result<llm::LlmSettings, String> {
+    let dir = data_dir(&app)?;
+    tokio::task::block_in_place(|| {
+        let existing = llm::get_embedding_key(&dir).ok();
+        llm::save_embedding(&dir, &draft, existing.as_deref()).map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+async fn clear_embedding_settings(app: tauri::AppHandle) -> Result<llm::LlmSettings, String> {
+    let dir = data_dir(&app)?;
+    tokio::task::block_in_place(|| llm::clear_embedding(&dir).map_err(|e| e.to_string()))
 }
 
 /// 用 OpenAI 兼容的 GET /models 探测供应商。不落盘。
@@ -157,6 +175,73 @@ async fn test_llm_connection(app: tauri::AppHandle, draft: llm::LlmDraft) -> Res
         "已接通，但列表里没有「{wanted}」。可用 {} 个模型，请核对模型名。",
         names.len()
     ))
+}
+
+/// 用 OpenAI 兼容的 POST /embeddings 探测向量供应商。不落盘。
+#[tauri::command]
+async fn test_embedding_connection(
+    app: tauri::AppHandle,
+    draft: llm::EmbeddingDraft,
+) -> Result<String, String> {
+    let dir = data_dir(&app)?;
+    let existing = llm::get_embedding_key(&dir).ok();
+    let chat = llm::load_config(&dir).unwrap_or_default();
+    let chat_key = llm::get_key(&dir).ok();
+    let normalized = llm::normalize_embedding_draft(
+        &draft,
+        existing.as_deref(),
+        &chat,
+        chat_key.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    if normalized.config.provider == llm::Provider::Off {
+        return Err("请先选择向量供应商".into());
+    }
+    let key = normalized
+        .key
+        .as_deref()
+        .or(existing.as_deref())
+        .or(if normalized.config.provider == chat.provider
+            && normalized.config.base_url == chat.base_url
+        {
+            chat_key.as_deref()
+        } else {
+            None
+        })
+        .unwrap_or("");
+    let url = llm::embeddings_url(&normalized.config.base_url);
+    let http = llm::http_client(std::time::Duration::from_secs(20))?;
+    let mut req = http.post(&url).json(&serde_json::json!({
+        "model": normalized.config.model,
+        "input": "ping",
+    }));
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| llm::describe_http_failure("测试向量", e))?;
+    let status = resp.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err("向量接口 API Key 无效或没有权限".into());
+    }
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let snippet: String = text.chars().take(120).collect();
+        return Err(format!("向量接口返回 {status}: {snippet}"));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let dims = parsed
+        .pointer("/data/0/embedding")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let wanted = normalized.config.model;
+    if dims == 0 {
+        return Ok(format!("已接通 {wanted}（未返回向量）"));
+    }
+    Ok(format!("连接成功：向量模型 {wanted}（{dims} 维）"))
 }
 
 fn parse_model_ids(v: &serde_json::Value) -> Vec<String> {
@@ -295,37 +380,45 @@ async fn search_cards(
 ) -> Result<Vec<ai::SearchHit>, String> {
     let dir = data_dir(&app)?;
     let now = now_secs();
-    let (lexical, pool, job) = {
+    let q_len = q.trim().chars().count();
+    let (lexical, job, allowed) = {
         let conn = state.lock().map_err(|e| e.to_string())?;
         let lexical = db::search_cards(&conn, &q, &filter, 200).map_err(db_err)?;
-        let pool = db::query_cards(&conn, &filter, 2_000, 0).map_err(db_err)?;
-        let job = if q.trim().chars().count() >= 4 {
+        let allowed = db::query_card_ids(&conn, &filter).map_err(db_err)?;
+        let job = if q_len >= 4 {
+            let pool = db::query_cards(&conn, &filter, 2_000, 0).map_err(db_err)?;
             ai::plan_embeddings(&conn, &dir, &pool).unwrap_or(None)
         } else {
             None
         };
-        (lexical, pool, job)
+        (lexical, job, allowed)
     };
-    if let Some(job) = job {
-        if let Ok(rows) = ai::run_embed_job(&job).await {
-            let conn = state.lock().map_err(|e| e.to_string())?;
-            let _ = ai::commit_embeddings(&conn, &job, rows, now);
-        }
-    }
-    let query_vec = if q.trim().chars().count() >= 4 {
+    // 先用已有向量检索。补齐索引放到后台，避免切到「全部卡片」时被大批量 embed 拖死，
+    // 也避免用墙的最近 2000 张当语义池，把刚搜过的旧书排除出去。
+    let query_vec = if q_len >= 4 {
         ai::embed_query(&dir, &q).await.ok().flatten()
     } else {
         None
     };
-    let Some((provider, model, qv)) = query_vec else {
-        return Ok(ai::lexical_hits(lexical));
+    let hits = if let Some((provider, model, qv)) = query_vec {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        let semantic = ai::semantic_hits_from_store(&conn, &provider, &model, &qv, &allowed, 8)
+            .unwrap_or_default();
+        ai::rrf_merge(&lexical, &semantic, 200)
+    } else {
+        ai::lexical_hits(lexical)
     };
-    let conn = state.lock().map_err(|e| e.to_string())?;
-    let allowed: std::collections::HashSet<i64> = pool.iter().map(|c| c.id).collect();
-    let by_id: std::collections::HashMap<i64, db::CardRow> = pool.into_iter().map(|c| (c.id, c)).collect();
-    let semantic = ai::semantic_hits_from_store(&conn, &provider, &model, &qv, &allowed, &by_id, 40)
-        .unwrap_or_default();
-    Ok(ai::rrf_merge(&lexical, &semantic, 200))
+    if let Some(job) = job {
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(rows) = ai::run_embed_job(&job).await {
+                if let Ok(guard) = app2.state::<Db>().lock() {
+                    let _ = ai::commit_embeddings(&guard, &job, rows, now);
+                }
+            }
+        });
+    }
+    Ok(hits)
 }
 
 #[tauri::command]
@@ -449,7 +542,7 @@ fn grade_review(state: State<'_, Db>, card_id: i64, rating: Rating) -> Result<Gr
     Ok(GradeResult { prev, next })
 }
 
-/// 把一张卡的间隔状态写回评分前快照，供清样 Z 撤销。
+/// 把一张卡的间隔状态写回评分前快照，供翻牌 Z 撤销。
 #[tauri::command]
 fn restore_review_state(state: State<'_, Db>, card_id: i64, srs: SrsState) -> Result<(), String> {
     let conn = state.lock().map_err(|e| e.to_string())?;
@@ -527,7 +620,7 @@ fn get_ai_index(app: tauri::AppHandle, state: State<'_, Db>) -> Result<AiIndexIn
         embeddings,
         artifacts,
         provider_off: cfg.provider == llm::Provider::Off,
-        embedding_ready: cfg.provider != llm::Provider::Off && !cfg.embedding_model.trim().is_empty(),
+        embedding_ready: llm::embedding_ready(&cfg),
     })
 }
 
@@ -542,7 +635,7 @@ fn clear_ai_derived(app: tauri::AppHandle, state: State<'_, Db>) -> Result<AiInd
         embeddings,
         artifacts,
         provider_off: cfg.provider == llm::Provider::Off,
-        embedding_ready: cfg.provider != llm::Provider::Off && !cfg.embedding_model.trim().is_empty(),
+        embedding_ready: llm::embedding_ready(&cfg),
     })
 }
 
@@ -735,6 +828,9 @@ pub fn run() {
             save_llm_settings,
             clear_llm_settings,
             test_llm_connection,
+            save_embedding_settings,
+            clear_embedding_settings,
+            test_embedding_connection,
             test_connection,
             open_external,
             sync_all,

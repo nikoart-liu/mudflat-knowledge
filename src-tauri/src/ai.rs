@@ -22,6 +22,11 @@ const EMBED_BATCH: usize = 128;
 const SIMILAR_LIMIT: usize = 5;
 const SHINGLE_N: usize = 2;
 const JACCARD_MIN: f32 = 0.12;
+/// 搜索「意思相关」：0.28 大约只是「同一语言」，会把书名相近、主题稀薄的卡灌进来。
+const SEMANTIC_MIN: f32 = 0.42;
+/// 相对最高分的地板。最高 0.70 时低于 0.62 的不要。
+const SEMANTIC_RELATIVE: f32 = 0.88;
+const SEMANTIC_LIMIT: usize = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AiError {
@@ -49,10 +54,12 @@ pub fn fnv1a64(s: &str) -> String {
 }
 
 pub fn card_content_hash(card: &CardRow) -> String {
-    let chapter = card.chapter_title.as_deref().unwrap_or("");
+    // e2：向量只吃正文和想法。前缀一变，旧的带书名向量会在下次搜索时重算。
     fnv1a64(&format!(
-        "{}|{}|{}|{}|{}",
-        card.id, card.text, card.note, chapter, card.book_title
+        "e2|{}|{}|{}",
+        card.id,
+        card.text.trim(),
+        card.note.trim()
     ))
 }
 
@@ -717,16 +724,9 @@ pub fn lexical_hits(rows: Vec<CardRow>) -> Vec<SearchHit> {
 }
 
 pub fn rank_semantic(query: &[f32], stored: &[(i64, Vec<f32>)], by_id: &HashMap<i64, CardRow>, limit: usize) -> Vec<CardRow> {
-    let mut scored: Vec<(i64, f32)> = stored
-        .iter()
-        .map(|(id, v)| (*id, cosine(query, v)))
-        .filter(|(_, s)| *s >= 0.28)
-        .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit);
-    scored
+    rank_semantic_ids(query, stored, limit)
         .into_iter()
-        .filter_map(|(id, _)| by_id.get(&id).cloned())
+        .filter_map(|id| by_id.get(&id).cloned())
         .collect()
 }
 
@@ -975,10 +975,6 @@ fn embed_text_for(card: &CardRow) -> String {
         s.push(' ');
         s.push_str(card.note.trim());
     }
-    if !card.book_title.is_empty() {
-        s.push(' ');
-        s.push_str(&card.book_title);
-    }
     s.chars().take(1200).collect()
 }
 
@@ -991,15 +987,12 @@ pub struct EmbedJob {
 }
 
 pub fn plan_embeddings(conn: &Connection, dir: &Path, cards: &[CardRow]) -> AiResult<Option<EmbedJob>> {
-    let (cfg, key) = match llm::load_runtime(dir) {
+    let (emb, key) = match llm::load_embedding_runtime(dir) {
         Ok(v) => v,
         Err(_) => return Ok(None),
     };
-    if cfg.embedding_model.trim().is_empty() {
-        return Ok(None);
-    }
-    let provider = provider_tag(cfg.provider).to_string();
-    let stored = load_vectors(conn, &provider, &cfg.embedding_model)?;
+    let provider = provider_tag(emb.provider).to_string();
+    let stored = load_vectors(conn, &provider, &emb.model)?;
     let have: HashMap<i64, String> = stored.into_iter().map(|s| (s.card_id, s.hash)).collect();
     let items: Vec<(i64, String, String)> = cards
         .iter()
@@ -1018,8 +1011,8 @@ pub fn plan_embeddings(conn: &Connection, dir: &Path, cards: &[CardRow]) -> AiRe
     }
     Ok(Some(EmbedJob {
         provider,
-        model: cfg.embedding_model,
-        base_url: cfg.base_url,
+        model: emb.model,
+        base_url: emb.base_url,
         key,
         items,
     }))
@@ -1055,7 +1048,6 @@ pub fn semantic_hits_from_store(
     model: &str,
     query: &[f32],
     allowed: &HashSet<i64>,
-    by_id: &HashMap<i64, CardRow>,
     limit: usize,
 ) -> AiResult<Vec<CardRow>> {
     let stored = load_vectors(conn, provider, model)?;
@@ -1064,7 +1056,26 @@ pub fn semantic_hits_from_store(
         .filter(|s| allowed.contains(&s.card_id))
         .map(|s| (s.card_id, s.vector))
         .collect();
-    Ok(rank_semantic(query, &pairs, by_id, limit))
+    let ids = rank_semantic_ids(query, &pairs, limit);
+    Ok(db::cards_by_ids(conn, &ids)?)
+}
+
+pub fn rank_semantic_ids(query: &[f32], stored: &[(i64, Vec<f32>)], limit: usize) -> Vec<i64> {
+    let mut scored: Vec<(i64, f32)> = stored
+        .iter()
+        .map(|(id, v)| (*id, cosine(query, v)))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let Some(&(_, best)) = scored.first() else {
+        return vec![];
+    };
+    if best < SEMANTIC_MIN {
+        return vec![];
+    }
+    let floor = (best * SEMANTIC_RELATIVE).max(SEMANTIC_MIN);
+    scored.retain(|(_, s)| *s >= floor);
+    scored.truncate(limit.min(SEMANTIC_LIMIT));
+    scored.into_iter().map(|(id, _)| id).collect()
 }
 
 pub fn store_question(
@@ -1249,20 +1260,17 @@ pub fn related_from_store(
 }
 
 pub async fn embed_query(dir: &Path, q: &str) -> AiResult<Option<(String, String, Vec<f32>)>> {
-    let (cfg, key) = match llm::load_runtime(dir) {
+    let (emb, key) = match llm::load_embedding_runtime(dir) {
         Ok(v) => v,
         Err(_) => return Ok(None),
     };
-    if cfg.embedding_model.trim().is_empty() {
-        return Ok(None);
-    }
     let text: String = q.trim().chars().take(400).collect();
-    let mut vecs = embed_texts(&cfg.base_url, &cfg.embedding_model, &key, &[text]).await?;
+    let mut vecs = embed_texts(&emb.base_url, &emb.model, &key, &[text]).await?;
     let Some(mut v) = vecs.pop() else {
         return Ok(None);
     };
     l2_normalize(&mut v);
-    Ok(Some((provider_tag(cfg.provider).to_string(), cfg.embedding_model, v)))
+    Ok(Some((provider_tag(emb.provider).to_string(), emb.model, v)))
 }
 
 pub fn load_related_pool(conn: &Connection, card: &CardRow) -> AiResult<Vec<CardRow>> {
@@ -1349,6 +1357,46 @@ mod tests {
         l2_normalize(&mut a);
         assert!((cosine(&a, &a) - 1.0).abs() < 1e-5);
         assert!(cosine(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+    }
+
+    fn unit(x: f32, y: f32) -> Vec<f32> {
+        let mut v = vec![x, y];
+        l2_normalize(&mut v);
+        v
+    }
+
+    #[test]
+    fn rank_semantic_drops_scores_far_below_the_best() {
+        let query = unit(1.0, 0.0);
+        let stored = vec![
+            (1, unit(1.0, 0.0)),
+            (2, unit(0.92, 0.39)),
+            (3, unit(0.50, 0.866)),
+        ];
+        let ids = rank_semantic_ids(&query, &stored, 10);
+        assert_eq!(ids, vec![1, 2]);
+        assert!(!ids.contains(&3), "过了绝对门槛但远低于最高分的不应进意思相关");
+    }
+
+    #[test]
+    fn rank_semantic_empty_when_nothing_clears_the_floor() {
+        let query = unit(1.0, 0.0);
+        let stored = vec![(1, unit(0.20, 0.98)), (2, unit(0.25, 0.97))];
+        assert!(rank_semantic_ids(&query, &stored, 10).is_empty());
+    }
+
+    #[test]
+    fn embed_text_is_highlight_and_note_without_book_title() {
+        let mut card = sample(1, "沉没成本让人加码。", "已经付出的不该再决定下一步。", "决策");
+        let t = embed_text_for(&card);
+        assert!(t.contains("沉没成本"));
+        assert!(t.contains("已经付出"));
+        assert!(!t.contains("原子习惯"), "书名会污染短划线的向量");
+        let hashed = card_content_hash(&card);
+        card.book_title = "另一本书".into();
+        assert_eq!(hashed, card_content_hash(&card), "书名变化不应迫使重算向量");
+        card.note = "改了想法".into();
+        assert_ne!(hashed, card_content_hash(&card));
     }
 
     #[test]
@@ -1485,6 +1533,35 @@ mod tests {
         let face = get_question_face(&conn, &changed).unwrap().unwrap();
         assert!(face.stale);
         assert_eq!(face.content.accepted_question.as_deref(), Some("为什么原文值得记住？"));
+    }
+
+    #[test]
+    fn semantic_hits_include_older_cards_outside_a_recency_pool() {
+        let conn = mem();
+        conn.execute(
+            "INSERT INTO cards (id, kind, text, created_at, updated_at) VALUES (1,'self','沉没成本',1,1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (id, kind, text, created_at, updated_at) VALUES (2,'self','早饭',100,100)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (id, kind, text, created_at, updated_at) VALUES (3,'self','天气',200,200)",
+            [],
+        )
+        .unwrap();
+        upsert_embedding(&conn, 1, "openai", "m", "h", vec![1.0, 0.0], 10).unwrap();
+        let query = vec![1.0, 0.0];
+        let newest_two: HashSet<i64> = [2, 3].into_iter().collect();
+        let miss = semantic_hits_from_store(&conn, "openai", "m", &query, &newest_two, 10).unwrap();
+        assert!(miss.is_empty(), "墙的最近 N 张若不包含已索引卡，语义会空");
+        let all = db::query_card_ids(&conn, &CardFilter::default()).unwrap();
+        assert!(all.contains(&1) && all.len() == 3);
+        let hits = semantic_hits_from_store(&conn, "openai", "m", &query, &all, 10).unwrap();
+        assert_eq!(hits.iter().map(|c| c.id).collect::<Vec<_>>(), vec![1]);
     }
 
     #[test]
