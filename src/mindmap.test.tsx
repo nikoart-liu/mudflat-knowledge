@@ -132,7 +132,7 @@ describe('MindmapView', () => {
         onNeedSettings={() => {}}
       />,
     );
-    await waitFor(() => expect(screen.getByText(/POST https:\/\/api.deepseek.com\/v1\/chat\/completions/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('将用本书 4 张卡片归纳主题（只发摘录）')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '生成线索' }));
     await waitFor(() => {
       expect(callMock.mock.calls.some((c) => c[0] === 'generate_mindmap')).toBe(true);
@@ -612,5 +612,51 @@ describe('MindmapView', () => {
     );
     fireEvent.click(await screen.findByRole('button', { name: '生成线索' }));
     expect(startedBooks).toEqual(['原子习惯']);
+  });
+
+  it('重新生成后每个主题仍只有一条入边，不叠双线', async () => {
+    const duped: Mindmap = {
+      ...map,
+      stats: { ...map.stats, themes: 5 },
+      root: {
+        id: 'root',
+        label: '投资中最简单的事（全新升级版）· 我的划线',
+        kind: 'book',
+        sourceCardIds: [],
+        children: [
+          { id: 't-1', label: '行业选择与竞争格局分析', kind: 'theme', sourceCardIds: [8], children: [] },
+          { id: 't-1', label: '按规律投资，不赌小概率事件', kind: 'theme', sourceCardIds: [8], children: [] },
+          { id: 't-2', label: '门槛、护城河', kind: 'theme', sourceCardIds: [9], children: [] },
+          { id: 't-2', label: '投资纪律与思维', kind: 'theme', sourceCardIds: [9], children: [] },
+          { id: 't-3', label: '不随', kind: 'theme', sourceCardIds: [8, 9], children: [] },
+        ],
+      },
+    };
+    callMock.mockImplementation(async (cmd?: string) => {
+      if (!cmd || cmd === 'get_mindmap_status') {
+        return { available: true, providerOff: false, cardCount: 4, cached: map, stale: false };
+      }
+      if (cmd === 'generate_mindmap') return duped;
+      throw new Error(`未处理 ${cmd}`);
+    });
+    const { container } = render(
+      <MindmapView
+        book={{ id: 1, title: '原子习惯' }}
+        cards={[card(8, '环境是无形的手。'), card(9, '把书放在沙发上。')]}
+        onToast={() => {}}
+        onExit={() => {}}
+        onOpenCard={() => {}}
+        onNeedSettings={() => {}}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '重新生成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认重新生成' }));
+    expect(await screen.findByText('按规律投资，不赌小概率事件')).toBeTruthy();
+    const lines = container.querySelectorAll('line.mm-wire');
+    const chips = container.querySelectorAll('.mm-chip');
+    expect(chips.length).toBe(5);
+    expect(lines.length).toBe(chips.length);
+    const keys = [...lines].map((el) => el.getAttribute('x1') + ',' + el.getAttribute('y1') + '-' + el.getAttribute('x2') + ',' + el.getAttribute('y2'));
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

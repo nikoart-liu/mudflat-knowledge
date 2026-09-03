@@ -492,18 +492,43 @@ pub fn parse_model_json(raw: &str) -> MindmapResult<Mindmap> {
         v["stats"] = serde_json::json!({ "cards": 0, "chapters": 0, "themes": 0, "unplaced": 0 });
     }
     let mut seq = 0u32;
+    let mut used = HashSet::new();
     if let Some(root) = v.get_mut("root") {
-        fill_node_defaults(root, "root", &mut seq, true);
+        fill_node_defaults(root, "root", &mut seq, &mut used, true);
     }
     serde_json::from_value(v).map_err(|e| MindmapError::Msg(format!("脑图结构不对: {e}")))
 }
 
-fn fill_node_defaults(v: &mut serde_json::Value, fallback_id: &str, seq: &mut u32, is_root: bool) {
+fn fill_node_defaults(
+    v: &mut serde_json::Value,
+    fallback_id: &str,
+    seq: &mut u32,
+    used: &mut HashSet<String>,
+    is_root: bool,
+) {
     let Some(obj) = v.as_object_mut() else { return };
-    let id_ok = obj.get("id").and_then(|x| x.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
-    if !id_ok {
-        obj.insert("id".into(), serde_json::json!(fallback_id));
+    let mut id = obj
+        .get("id")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if id.is_empty() {
+        id = fallback_id.to_string();
     }
+    if used.contains(&id) {
+        let raw = id.clone();
+        let mut i = 2u32;
+        loop {
+            let next = format!("{raw}-{i}");
+            if !used.contains(&next) {
+                id = next;
+                break;
+            }
+            i += 1;
+        }
+    }
+    used.insert(id.clone());
+    obj.insert("id".into(), serde_json::json!(id));
     if obj.get("kind").and_then(|x| x.as_str()).unwrap_or("").is_empty() {
         obj.insert("kind".into(), serde_json::json!(if is_root { "book" } else { "theme" }));
     }
@@ -532,7 +557,7 @@ fn fill_node_defaults(v: &mut serde_json::Value, fallback_id: &str, seq: &mut u3
         for child in children {
             *seq += 1;
             let child_id = format!("t-{seq}");
-            fill_node_defaults(child, &child_id, seq, false);
+            fill_node_defaults(child, &child_id, seq, used, false);
         }
     }
 }
@@ -1347,6 +1372,28 @@ mod tests {
         assert_eq!(m.root.children[0].kind, "theme");
         assert_eq!(m.root.children[0].source_card_ids, vec![1, 2, 3]);
         assert_eq!(m.root.children[1].source_card_ids, vec![8, 9, 10]);
+        assert_ne!(m.root.children[0].id, m.root.children[1].id);
+    }
+
+    #[test]
+    fn parse_rewrites_duplicate_theme_ids() {
+        let raw = r#"{
+          "root": {
+            "id": "root",
+            "label": "书",
+            "children": [
+              { "id": "t-1", "label": "行业选择与竞争格局分析" },
+              { "id": "t-1", "label": "按规律投资，不赌小概率事件" },
+              { "id": "t-2", "label": "门槛、护城河" },
+              { "id": "t-2", "label": "投资纪律与思维" }
+            ]
+          }
+        }"#;
+        let m = parse_model_json(raw).unwrap();
+        let ids: Vec<&str> = m.root.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids.len(), ids.iter().copied().collect::<HashSet<_>>().len());
+        assert_eq!(ids[0], "t-1");
+        assert_eq!(ids[1], "t-1-2");
     }
 
     #[test]

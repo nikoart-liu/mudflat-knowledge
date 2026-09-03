@@ -49,6 +49,7 @@ const backend = {
   queue: [] as CardRow[],
   graded: [] as { cardId: number; rating: string }[],
   excluded: [] as { id: number; excluded: boolean }[],
+  restored: [] as { cardId: number }[],
   failGrading: false,
 };
 
@@ -64,8 +65,14 @@ function mockBackend() {
       case 'grade_review': {
         if (backend.failGrading) throw new Error('评分失败');
         backend.graded.push({ cardId: Number(args?.cardId), rating: String(args?.rating) });
-        return { due_at: NOW + 86_400, interval_days: 1, ease: 2.5, reps: 1, lapses: 0 };
+        return {
+          prev: { due_at: 0, interval_days: 0, ease: 2.5, reps: 0, lapses: 0 },
+          next: { due_at: NOW + 86_400, interval_days: 1, ease: 2.5, reps: 1, lapses: 0 },
+        };
       }
+      case 'restore_review_state':
+        backend.restored.push({ cardId: Number(args?.cardId) });
+        return undefined;
       case 'set_excluded_from_review':
         backend.excluded.push({ id: Number(args?.id), excluded: Boolean(args?.excluded) });
         return undefined;
@@ -93,6 +100,7 @@ beforeEach(() => {
   backend.queue = [];
   backend.graded = [];
   backend.excluded = [];
+  backend.restored = [];
   backend.failGrading = false;
   callMock.mockReset();
   mockBackend();
@@ -103,7 +111,7 @@ describe('ReviewView 四档评分（R1）', () => {
     backend.dueCount = 2;
     backend.queue = [card(1, '第一条'), card(2, '第二条')];
     const { container } = render(
-      <ReviewView onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView onToast={vi.fn()} onExit={vi.fn()} />,
     );
     await startReview(container);
 
@@ -119,7 +127,7 @@ describe('ReviewView 四档评分（R1）', () => {
     backend.dueCount = 2;
     backend.queue = [card(1, '第一条'), card(2, '第二条')];
     const { container } = render(
-      <ReviewView onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView onToast={vi.fn()} onExit={vi.fn()} />,
     );
     await startReview(container);
 
@@ -160,7 +168,7 @@ describe('ReviewView 四档评分（R1）', () => {
     backend.failGrading = true;
     const onToast = vi.fn();
     const { container } = render(
-      <ReviewView onToast={onToast} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView onToast={onToast} onExit={vi.fn()} />,
     );
     await startReview(container);
 
@@ -186,6 +194,24 @@ describe('ReviewView 四档评分（R1）', () => {
     );
     await waitFor(() => expect(backNum(container)).toBe('02'), { timeout: 2000 });
   });
+
+  it('评分后 Z 撤销上一张，回到该卡正面', async () => {
+    backend.dueCount = 2;
+    backend.queue = [card(1, '第一条'), card(2, '第二条')];
+    const { container } = render(
+      <ReviewView onToast={vi.fn()} onExit={vi.fn()} />,
+    );
+    await startReview(container);
+    fireEvent.keyDown(window, { key: ' ' });
+    await screen.findByRole('group', { name: '记忆评分' });
+    fireEvent.keyDown(window, { key: '3' });
+    await waitFor(() => expect(backNum(container)).toBe('02'), { timeout: 2000 });
+
+    fireEvent.keyDown(window, { key: 'z' });
+    await waitFor(() => expect(backend.restored).toEqual([{ cardId: 1 }]));
+    await waitFor(() => expect(backNum(container)).toBe('01'));
+    expect(screen.getByRole('group', { name: '记忆评分' })).toBeTruthy();
+  });
 });
 
 describe('ReviewView 结算分支（R3）', () => {
@@ -193,7 +219,7 @@ describe('ReviewView 结算分支（R3）', () => {
     backend.dueCount = 1;
     backend.queue = [card(1, '唯一一张')];
     const { container } = render(
-      <ReviewView onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView onToast={vi.fn()} onExit={vi.fn()} />,
     );
     await startReview(container);
     backend.dueCount = 0; // 结算时重查为 0
@@ -209,7 +235,7 @@ describe('ReviewView 结算分支（R3）', () => {
     backend.dueCount = 45;
     backend.queue = [card(1, '第一批之一'), card(2, '第一批之二')];
     const { container } = render(
-      <ReviewView onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView onToast={vi.fn()} onExit={vi.fn()} />,
     );
     await startReview(container);
     backend.dueCount = 25; // 首批结束后还剩 25
@@ -237,7 +263,7 @@ describe('ReviewView 移出回顾（R2）', () => {
     backend.dueCount = 3;
     backend.queue = [card(1, '低价值'), card(2, '也移出'), card(3, '留下的')];
     const { container } = render(
-      <ReviewView onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView onToast={vi.fn()} onExit={vi.fn()} />,
     );
     await startReview(container);
 
@@ -267,6 +293,29 @@ describe('ReviewView 移出回顾（R2）', () => {
       ]),
     );
   });
+
+  it('移出后 Z 撤销，卡片回到队列', async () => {
+    backend.dueCount = 2;
+    backend.queue = [card(1, '低价值'), card(2, '留下的')];
+    const { container } = render(
+      <ReviewView onToast={vi.fn()} onExit={vi.fn()} />,
+    );
+    await startReview(container);
+    fireEvent.keyDown(window, { key: ' ' });
+    await screen.findByRole('group', { name: '记忆评分' });
+    fireEvent.click(screen.getByRole('button', { name: '移出回顾' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '移出回顾' }));
+    await waitFor(() => expect(backNum(container)).toBe('02'), { timeout: 2000 });
+
+    fireEvent.keyDown(window, { key: 'z' });
+    await waitFor(() =>
+      expect(backend.excluded).toEqual([
+        { id: 1, excluded: true },
+        { id: 1, excluded: false },
+      ]),
+    );
+    await waitFor(() => expect(backNum(container)).toBe('01'));
+  });
 });
 
 describe('ReviewView 本书清样', () => {
@@ -274,7 +323,7 @@ describe('ReviewView 本书清样', () => {
     backend.dueCount = 2;
     backend.queue = [card(1, '本书卡')];
     const { container } = render(
-      <ReviewView book={{ id: 7, title: '置身事内' }} onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView book={{ id: 7, title: '置身事内' }} onToast={vi.fn()} onExit={vi.fn()} />,
     );
 
     expect(await screen.findByText(/本书到期 2 张/)).toBeTruthy();
@@ -295,7 +344,7 @@ describe('ReviewView 本书清样', () => {
   it('本书到期为 0：文案指向这本书而非全馆', async () => {
     backend.dueCount = 0;
     render(
-      <ReviewView book={{ id: 7, title: '置身事内' }} onToast={vi.fn()} onExit={vi.fn()} hasKey hasBooks />,
+      <ReviewView book={{ id: 7, title: '置身事内' }} onToast={vi.fn()} onExit={vi.fn()} />,
     );
     expect(await screen.findByText('这本书当前没有到期卡片')).toBeTruthy();
     expect(screen.queryByText('当前没有到期卡片')).toBeNull();

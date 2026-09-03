@@ -104,6 +104,11 @@ export interface SrsState {
   lapses: number;
 }
 
+export interface GradeResult {
+  prev: SrsState;
+  next: SrsState;
+}
+
 export interface ReviewSettings {
   batchSize: number;
 }

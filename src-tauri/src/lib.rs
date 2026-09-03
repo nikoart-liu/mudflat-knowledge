@@ -396,14 +396,27 @@ fn get_due_count(state: State<'_, Db>, book_id: Option<i64>) -> Result<i64, Stri
     db::due_count(&conn, now_secs(), book_id).map_err(db_err)
 }
 
+#[derive(serde::Serialize)]
+struct GradeResult {
+    prev: SrsState,
+    next: SrsState,
+}
+
 #[tauri::command]
-fn grade_review(state: State<'_, Db>, card_id: i64, rating: Rating) -> Result<SrsState, String> {
+fn grade_review(state: State<'_, Db>, card_id: i64, rating: Rating) -> Result<GradeResult, String> {
     let conn = state.lock().map_err(|e| e.to_string())?;
     let now = now_secs();
-    let current = db::load_review_state(&conn, card_id).map_err(db_err)?.unwrap_or_default();
-    let next = srs::schedule(&current, rating, now);
+    let prev = db::load_review_state(&conn, card_id).map_err(db_err)?.unwrap_or_default();
+    let next = srs::schedule(&prev, rating, now);
     db::save_review_state(&conn, card_id, &next).map_err(db_err)?;
-    Ok(next)
+    Ok(GradeResult { prev, next })
+}
+
+/// 把一张卡的间隔状态写回评分前快照，供清样 Z 撤销。
+#[tauri::command]
+fn restore_review_state(state: State<'_, Db>, card_id: i64, srs: SrsState) -> Result<(), String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    db::save_review_state(&conn, card_id, &srs).map_err(db_err)
 }
 
 // ---------- review settings (R3) ----------
@@ -501,6 +514,7 @@ pub fn run() {
             delete_tag,
             get_due_cards,
             grade_review,
+            restore_review_state,
             get_due_count,
             get_review_settings,
             set_review_batch_size,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { exportClueOutline, layoutMindmap, nodeBox, visibleClue } from './mindmap-layout';
+import { exportClueOutline, layoutMindmap, nodeBox, uniquifyNodeIds, visibleClue } from './mindmap-layout';
 import type { MindmapNode } from './types';
 
 function theme(id: string, label: string, children: MindmapNode[] = []): MindmapNode {
@@ -125,6 +125,75 @@ describe('layoutMindmap', () => {
     const hub = nodeBox('原子习惯 · 我的划线', 0);
     const leaf = nodeBox('把充电器换房间', 2);
     expect(hub.w).toBeGreaterThan(leaf.w);
+  });
+
+  function assertOneIncomingEdge(laid: ReturnType<typeof layoutMindmap>) {
+    const ids = laid.nodes.map((n) => n.id);
+    expect(new Set(ids).size, `duplicate node ids: ${ids.join(',')}`).toBe(ids.length);
+    const incoming = new Map<string, number>();
+    for (const e of laid.edges) {
+      incoming.set(e.to, (incoming.get(e.to) ?? 0) + 1);
+      const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+      expect(len, `${e.from}->${e.to} zero-length`).toBeGreaterThan(1);
+    }
+    for (const n of laid.nodes) {
+      if (n.depth === 0) continue;
+      expect(incoming.get(n.id) ?? 0, `${n.id} incoming`).toBe(1);
+    }
+  }
+
+  it('重复 id 时每个盒子仍有且仅有一条入边（重新生成常复用 t-1）', () => {
+    const root: MindmapNode = {
+      id: 'root',
+      label: '投资中最简单的事（全新升级版）· 我的划线',
+      kind: 'book',
+      sourceCardIds: [],
+      children: [
+        theme('t-1', '行业选择与竞争格局分析'),
+        theme('t-1', '按规律投资，不赌小概率事件'),
+        theme('t-2', '门槛、护城河'),
+        theme('t-2', '投资纪律与思维'),
+        theme('t-3', '不随'),
+      ],
+    };
+    const laid = layoutMindmap(visibleClue(root, null));
+    assertOneIncomingEdge(laid);
+    expect(laid.nodes.filter((n) => n.depth === 1)).toHaveLength(5);
+  });
+
+  it('同一节点挂在两个父级时不当成双线', () => {
+    const shared = theme('shared', '投资纪律与思维');
+    const root: MindmapNode = {
+      id: 'root',
+      label: '书名 · 我的划线',
+      kind: 'book',
+      sourceCardIds: [],
+      children: [
+        theme('a', '行业选择与竞争格局分析', [shared]),
+        { ...shared, children: [] },
+      ],
+    };
+    const laid = layoutMindmap(visibleClue(root, 'a'));
+    assertOneIncomingEdge(laid);
+  });
+});
+
+describe('uniquifyNodeIds', () => {
+  it('把重复的 t-1 改成 t-1、t-1-2，不丢节点', () => {
+    const root: MindmapNode = {
+      id: 'root',
+      label: '书',
+      kind: 'book',
+      sourceCardIds: [],
+      children: [
+        theme('t-1', '甲'),
+        theme('t-1', '乙'),
+        theme('t-2', '丙'),
+      ],
+    };
+    const u = uniquifyNodeIds(root);
+    expect(u.children.map((c) => c.id)).toEqual(['t-1', 't-1-2', 't-2']);
+    expect(u.children.map((c) => c.label)).toEqual(['甲', '乙', '丙']);
   });
 });
 

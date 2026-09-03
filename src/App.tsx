@@ -18,13 +18,14 @@ import {
   type SettingsInfo,
   type SetupStatus,
   type SrsState,
+  type GradeResult,
   type SyncEventPayload,
   type SyncSummary,
   type TagRow,
   type ClueTask,
 } from './types';
 import './App.css';
-import { exportClueOutline, layoutMindmap, visibleClue } from './mindmap-layout';
+import { exportClueOutline, layoutMindmap, uniquifyNodeIds, visibleClue } from './mindmap-layout';
 import { formatClueElapsed, formatClueProgress } from './clue-progress';
 
 type CardsView = { name: 'cards'; bookId: number | null };
@@ -176,7 +177,9 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const [tagToDelete, setTagToDelete] = useState<TagRow | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  type ToastAction = { label: string; onClick: () => void };
+  const [toast, setToast] = useState<{ msg: string; action?: ToastAction } | null>(null);
+  const toastTimer = useRef(0);
   const [dueCount, setDueCount] = useState(0);
   // 本书清样入口：书内到期数（随全局 dueCount 变化重查，覆盖同步后/回顾归来）
   const [bookDue, setBookDue] = useState(0);
@@ -210,9 +213,10 @@ export default function App() {
     return () => ro.disconnect();
   }, [view.name]);
 
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 2600);
+  const showToast = useCallback((msg: string, action?: ToastAction) => {
+    setToast({ msg, action });
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), action ? 4000 : 2600);
   }, []);
 
   const refreshMeta = useCallback(async () => {
@@ -798,11 +802,14 @@ export default function App() {
                     hasBooks={hasBooks}
                     searching={searching}
                     filtered={filtered}
+                    searchAll={searchAll}
                     query={query.trim()}
                     syncing={syncing}
                     onSetup={() => setView({ name: 'settings' })}
                     onSync={doSync}
                     onClear={clearFilters}
+                    onSearchAll={() => setSearchAll(true)}
+                    onClearSearch={() => setQuery('')}
                   />
                 )}
               </div>
@@ -825,8 +832,6 @@ export default function App() {
               book={view.bookId != null ? books.find((b) => b.id === view.bookId) ?? null : null}
               onToast={showToast}
               onExit={() => { refreshMeta(); setView({ name: 'cards', bookId: view.bookId }); }}
-              hasKey={hasKey}
-              hasBooks={hasBooks}
             />
           )}
           {view.name === 'settings' && (
@@ -879,14 +884,31 @@ export default function App() {
           onCancel={() => setTagToDelete(null)}
         />
       )}
-      {toast && <div className="toast" role="status">{toast}</div>}
+      {toast && (
+        <div className="toast" role="status">
+          <span>{toast.msg}</span>
+          {toast.action && (
+            <button
+              type="button"
+              className="toast-undo"
+              onClick={() => {
+                const act = toast.action;
+                setToast(null);
+                act?.onClick();
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 function EmptyWall({
-  ready, needsSetup, hasKey, hasBooks, searching, filtered, query, syncing,
-  onSetup, onSync, onClear,
+  ready, needsSetup, hasKey, hasBooks, searching, filtered, searchAll, query, syncing,
+  onSetup, onSync, onClear, onSearchAll, onClearSearch,
 }: {
   ready: boolean;
   needsSetup: boolean;
@@ -894,18 +916,20 @@ function EmptyWall({
   hasBooks: boolean;
   searching: boolean;
   filtered: boolean;
+  searchAll: boolean;
   query: string;
   syncing: string | null;
   onSetup: () => void;
   onSync: () => void;
   onClear: () => void;
+  onSearchAll: () => void;
+  onClearSearch: () => void;
 }) {
   if (!ready) return <p className="hint empty-state">载入卡片…</p>;
   if (needsSetup || (!hasKey && !hasBooks)) {
     return (
       <div className="empty-setup">
         <p className="empty-title">把微信读书的划线接到这面墙上</p>
-        <p className="empty-body">到设置粘贴 API Key，再同步。划线和想法会变成可检索、可翻牌的卡片。</p>
         <button className="primary" onClick={onSetup}>填写 API Key</button>
       </div>
     );
@@ -914,7 +938,6 @@ function EmptyWall({
     return (
       <div className="empty-setup">
         <p className="empty-title">Key 已经存好，墙上还是空的</p>
-        <p className="empty-body">同步一次，微信读书里的划线会出现在这里。</p>
         <button className="primary" onClick={onSync} disabled={!!syncing}>{syncing ?? '同步'}</button>
       </div>
     );
@@ -923,18 +946,18 @@ function EmptyWall({
     return (
       <div className="empty-setup">
         <p className="empty-title">没有找到「{query}」</p>
-        <p className="empty-body">
-          {filtered ? '检索范围是当前书、标签或星标，可点「搜索全部卡片」扩大范围。' : '检索范围是全部卡片。'}
-          换个词，或按 Esc 退出检索。
-        </p>
+        {filtered && !searchAll ? (
+          <button className="primary" onClick={onSearchAll}>在全部卡片中搜索</button>
+        ) : (
+          <button onClick={onClearSearch}>清空检索</button>
+        )}
       </div>
     );
   }
   if (filtered) {
     return (
       <div className="empty-setup">
-        <p className="empty-title">没有匹配的卡片</p>
-        <p className="empty-body">当前书、标签或星标筛过了墙。清掉筛选，或换一本书。</p>
+        <p className="empty-title">没有符合当前筛选的卡片</p>
         <button onClick={onClear}>清除筛选</button>
       </div>
     );
@@ -942,7 +965,6 @@ function EmptyWall({
   return (
     <div className="empty-setup">
       <p className="empty-title">墙上还没有卡片</p>
-      <p className="empty-body">同步微信读书，或自己写一张。</p>
       <button className="primary" onClick={onSync} disabled={!hasKey || !!syncing}>{syncing ?? '同步'}</button>
     </div>
   );
@@ -1158,7 +1180,7 @@ function EditModal({ card, onClose, onSaved, onPatched, onToast }: {
         {!isSelf && (
           <textarea rows={5} value={note} onChange={(e) => setNote(e.target.value)} placeholder="写下你的想法…" aria-label="想法" autoFocus />
         )}
-        <label className="switch-row" title="关闭后此卡不再进入回顾队列，仍保留在卡片墙与搜索中">
+        <label className="switch-row">
           <input
             type="checkbox"
             checked={included}
@@ -1166,7 +1188,6 @@ function EditModal({ card, onClose, onSaved, onPatched, onToast }: {
           />
           <span className="switch-label">纳入翻牌回顾</span>
         </label>
-        <p className="hint switch-hint">关闭后此卡不再进入回顾队列，仍保留在卡片墙与搜索中。</p>
         <div className="tag-editor">
           {card.tags.map((t) => (
             <button key={t} className="chip small deletable" onClick={() => removeTag(t)} aria-label={'移除标签 ' + t} title="点击移除">{t} ×</button>
@@ -1237,12 +1258,15 @@ function CreateModal({ onClose, onSaved, onToast }: {
 
 // 具名导出供前端交互测试直接渲染（PRD 12.1）
 // book 非空 = 本书清样：队列、剩余数、文案都只围绕这一本书。
-export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
+type ReviewToast = (m: string, action?: { label: string; onClick: () => void }) => void;
+type LastUndo =
+  | { kind: 'grade'; card: CardRow; rating: ReviewRating; prev: SrsState; idx: number }
+  | { kind: 'exclude'; card: CardRow; idx: number };
+
+export function ReviewView({ book = null, onToast, onExit }: {
   book?: { id: number; title: string } | null;
-  onToast: (m: string) => void;
+  onToast: ReviewToast;
   onExit: () => void;
-  hasKey: boolean;
-  hasBooks: boolean;
 }) {
   const bookId = book?.id ?? null;
   const scopeLine = book ? <p className="review-scope mono">本书 · {book.title}</p> : null;
@@ -1266,6 +1290,14 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
   flippedRef.current = flipped;
   const ratedRef = useRef<Record<ReviewRating, number>>({ again: 0, hard: 0, good: 0, easy: 0 });
   const excludedRef = useRef(0);
+  const lastUndoRef = useRef<LastUndo | null>(null);
+  const undoGenRef = useRef(0);
+  const settleGenRef = useRef(0);
+  const flyTimer = useRef(0);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const idxRef = useRef(idx);
+  idxRef.current = idx;
 
   // 进入页：今日到期总数 + 批次设置（R3.1/R3.2）；本书清样时按书取数
   useEffect(() => {
@@ -1298,6 +1330,7 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
     }
     ratedRef.current = { again: 0, hard: 0, good: 0, easy: 0 };
     excludedRef.current = 0;
+    lastUndoRef.current = null;
     setQueue(cards);
     setIdx(0);
     setFlipped(false);
@@ -1318,11 +1351,14 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
 
   // 结算：重查真实到期数，分支「今天翻完了 / 本批完成，还剩 N」（R3.3）
   const settle = async () => {
+    const gen = ++settleGenRef.current;
     let remaining = todayLeft;
     try {
       remaining = await call<number>('get_due_count', { bookId });
+      if (settleGenRef.current !== gen) return;
       setDueTotal(remaining);
     } catch { /* 用本地估算兜底 */ }
+    if (settleGenRef.current !== gen) return;
     setSettling({ remaining, rated: { ...ratedRef.current }, excluded: excludedRef.current });
     setPhase('settling');
   };
@@ -1330,13 +1366,52 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
   const flyOutThen = (after: () => void) => {
     flyingRef.current = true;
     setFlying(true);
-    window.setTimeout(() => {
+    window.clearTimeout(flyTimer.current);
+    flyTimer.current = window.setTimeout(() => {
       flyingRef.current = false;
       setFlying(false);
       setFlipped(false);
       setDueNote(null);
       after();
     }, 240);
+  };
+
+  const undoLast = async () => {
+    const u = lastUndoRef.current;
+    if (!u || gradingRef.current) return;
+    if (phaseRef.current !== 'review' && phaseRef.current !== 'settling') return;
+    lastUndoRef.current = null;
+    undoGenRef.current += 1;
+    settleGenRef.current += 1;
+    window.clearTimeout(flyTimer.current);
+    flyingRef.current = false;
+    setFlying(false);
+    try {
+      if (u.kind === 'grade') {
+        await call('restore_review_state', { cardId: u.card.id, srs: u.prev });
+        ratedRef.current[u.rating] = Math.max(0, ratedRef.current[u.rating] - 1);
+      } else {
+        await call('set_excluded_from_review', { id: u.card.id, excluded: false });
+        excludedRef.current = Math.max(0, excludedRef.current - 1);
+      }
+      setTodayLeft((t) => t + 1);
+      setSettling(null);
+      setPhase('review');
+      setIdx(u.idx);
+      setFlipped(true);
+      setDueNote(null);
+      onToast('已撤销');
+    } catch (e) {
+      onToast(explainError(e));
+    }
+  };
+
+  const offerUndo = (msg: string, label: string) => {
+    const gen = ++undoGenRef.current;
+    onToast(msg, {
+      label,
+      onClick: () => { if (undoGenRef.current === gen) void undoLast(); },
+    });
   };
 
   // 四档评分（R1）：只接受第一次请求；失败停留当前卡、进度不递增、可重试
@@ -1346,12 +1421,16 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
     gradingRef.current = true;
     setGrading(true);
     try {
-      const next: SrsState = await call('grade_review', { cardId: card.id, rating });
+      const result = await call<GradeResult>('grade_review', { cardId: card.id, rating });
+      const next = result.next;
       ratedRef.current[rating] += 1;
       setTodayLeft((t) => Math.max(0, t - 1));
       setDueNote(`下次回顾 · ${humanizeDue(next.due_at - nowSecs())}`);
+      lastUndoRef.current = { kind: 'grade', card, rating, prev: result.prev, idx };
       gradingRef.current = false;
       setGrading(false);
+      const label = RATING_DEFS.find((d) => d.key === rating)?.label ?? rating;
+      offerUndo(`已记为「${label}」`, '撤销（Z）');
       flyOutThen(() => {
         const nextIdx = idx + 1;
         setIdx(nextIdx);
@@ -1372,10 +1451,11 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
       try { localStorage.setItem(EXCLUDE_HINT_KEY, '1'); } catch { /* 本地存储不可用时忽略 */ }
       excludedRef.current += 1;
       setTodayLeft((t) => Math.max(0, t - 1));
-      onToast('已移出回顾 · 卡片仍保留在卡片墙与搜索中');
+      lastUndoRef.current = { kind: 'exclude', card, idx: idxRef.current };
       flyingRef.current = false;
+      offerUndo('已移出回顾', '撤销');
       flyOutThen(() => {
-        const nextIdx = idx + 1;
+        const nextIdx = idxRef.current + 1;
         setIdx(nextIdx);
         if (nextIdx >= queue.length) void settle();
       });
@@ -1426,6 +1506,7 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
     }
     ratedRef.current = { again: 0, hard: 0, good: 0, easy: 0 };
     excludedRef.current = 0;
+    lastUndoRef.current = null;
     setSettling(null);
     setQueue(cards);
     setIdx(0);
@@ -1449,7 +1530,13 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
         return;
       }
       if (phase === 'settling') {
+        if ((e.key === 'z' || e.key === 'Z') && lastUndoRef.current) { e.preventDefault(); void undoLast(); return; }
         if (!onButton && e.key === 'Enter' && settling && settling.remaining > 0) { e.preventDefault(); void continueNextBatch(); }
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        void undoLast();
         return;
       }
       if ((e.key === '1' || e.key === '2' || e.key === '3' || e.key === '4') && flippedRef.current) {
@@ -1461,7 +1548,8 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
       if (onButton) return; // 按钮焦点上让 Space/Enter 走默认点击，避免双触发
       if (e.key === 'z' || e.key === 'Z' || e.key === 'Backspace') {
         e.preventDefault();
-        unflip();
+        if (flippedRef.current) unflip();
+        else void undoLast();
         return;
       }
       if (e.key === ' ' || e.key === 'Enter') {
@@ -1486,24 +1574,11 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
         ) : dueTotal <= 0 ? (
           <div className="deck-done">
             <p className="review-text">{book ? '这本书当前没有到期卡片' : '当前没有到期卡片'}</p>
-            <p className="review-hint">
-              {!hasKey
-                ? '先到设置填写 API Key，再同步。到期的卡片会排进这副牌。'
-                : !hasBooks
-                  ? '同步之后，新卡片会自动进入队列。'
-                  : book
-                    ? '其他书的到期卡片不受影响。新划线会自动进入这本书的队列。'
-                    : '新卡片会自动进入队列。间隔重复讲究少而勤。'}
-            </p>
             <button className="primary" onClick={onExit}>返回卡片墙</button>
           </div>
         ) : (
           <div className="deck-done">
             <p className="review-text">{book ? '本书' : '今日'}到期 {dueTotal} 张 · 本批 {batchNow} 张</p>
-            <p className="review-hint">
-              {book ? '只翻这一本书的到期卡片。' : ''}
-              每批 {batchSize} 张，完成一批再看今天还剩多少。设置里可改为 10 / 20 / 30。
-            </p>
             <div className="deck-done-actions">
               <button className="primary" onClick={() => void startBatch()}>开始翻牌（Enter）</button>
               <button className="ghost" onClick={onExit}>返回卡片墙</button>
@@ -1593,7 +1668,7 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
                 <span className="deck-back-label">翻牌</span>
                 <span className="deck-back-num mono">{String(idx + 1).padStart(2, '0')}<span> / {queue.length}</span></span>
               </div>
-              <span className="deck-back-hint"><Icon name="refresh" size={12} />点击或空格翻面</span>
+              <span className="deck-back-hint">空格</span>
             </div>
             <div className="deck-face front">
               <span className="card-source">{[card.bookTitle, card.chapterTitle].filter(Boolean).join(' / ') || '自建卡'}</span>
@@ -1603,7 +1678,6 @@ export function ReviewView({ book = null, onToast, onExit, hasKey, hasBooks }: {
                 {card.note && <p className="card-note">{card.note}</p>}
               </div>
               {dueNote && <span className="deck-due-note">{dueNote}</span>}
-              <span className="deck-next-hint">按你此刻的熟悉程度选择</span>
             </div>
           </div>
         </div>
@@ -1712,7 +1786,9 @@ export function MindmapView({
   useEffect(() => {
     if (activeTask?.result) {
       setMap(activeTask.result);
-      setStatus((s) => (s ? { ...s, cached: activeTask.result, stale: false } : s));
+      setExpandedId(null);
+      setOpenId(null);
+      setStatus((s) => (s ? { ...s, cached: activeTask.result ?? null, stale: false } : s));
     }
   }, [activeTask?.result]);
 
@@ -1816,6 +1892,8 @@ export function MindmapView({
       };
       const next = await call<Mindmap>('generate_mindmap', { bookId: book.id, onProgress: chan });
       setMap(next);
+      setExpandedId(null);
+      setOpenId(null);
       setStatus((s) => s ? { ...s, cached: next, stale: false } : s);
       setLocalProgress(null);
       setLocalProgressFrac(null);
@@ -1854,7 +1932,6 @@ export function MindmapView({
   return (
     <div className="mindmap">
       <h2 className="review-title">线索 · {book.title}</h2>
-      <p className="review-scope mono">概要节点 · 点开才看划线</p>
       <div className="review-top">
         <div className="review-remaining">
           <span className="hint-mono">卡片 · 主题</span>
@@ -1881,7 +1958,6 @@ export function MindmapView({
       {status?.providerOff && !map && (
         <div className="deck-done">
           <p className="review-text">还没有启用语言模型</p>
-          <p className="review-hint">到设置「四、语言模型」选择供应商后，才能把划线归纳成主题线索。</p>
           <div className="deck-done-actions">
             <button className="primary" onClick={onNeedSettings}>去设置</button>
             <button className="ghost" onClick={onExit}>返回卡片墙</button>
@@ -1891,12 +1967,7 @@ export function MindmapView({
       {status && !status.providerOff && !map && (
         <div className="deck-done">
           <p className="review-text">把这本书的划线收成一张图</p>
-          <p className="review-hint">
-            将发送本书 {status.cardCount} 张卡片的标题级文本，不会上传整库。画面上只有概要，点节点才看原文。
-          </p>
-          {status.chatEndpoint && (
-            <p className="hint-mono">请求 {status.model ?? '模型'} · POST {status.chatEndpoint}</p>
-          )}
+          <p className="review-hint">将用本书 {status.cardCount} 张卡片归纳主题（只发摘录）</p>
           <ClueProgress
             busy={busy}
             line={progress}
@@ -2127,12 +2198,13 @@ function MindmapCanvas({
   const stageRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ px: number; py: number; panX: number; panY: number; moved: boolean } | null>(null);
   const centered = useRef(false);
-  const vis = useMemo(() => visibleClue(mapRoot, expandedId), [mapRoot, expandedId]);
+  const uniqueRoot = useMemo(() => uniquifyNodeIds(mapRoot), [mapRoot]);
+  const vis = useMemo(() => visibleClue(uniqueRoot, expandedId), [uniqueRoot, expandedId]);
   const childCount = useMemo(() => {
     const m = new Map<string, number>();
-    for (const c of mapRoot.children) m.set(c.id, c.children.length);
+    for (const c of uniqueRoot.children) m.set(c.id, c.children.length);
     return m;
-  }, [mapRoot]);
+  }, [uniqueRoot]);
   const expandIds = useMemo(() => {
     const s = new Set<string>();
     for (const [id, n] of childCount) if (n > 0) s.add(id);
@@ -2275,11 +2347,11 @@ function MindmapCanvas({
         }}
       >
         <svg className="mm-wires" width={laid.width} height={laid.height} aria-hidden="true">
-          {laid.edges.map((e) => (
+          {laid.edges.map((e, i) => (
             <line
-              key={`${e.from}-${e.to}`}
+              key={`${e.from}-${e.to}-${i}`}
               x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
-              className={e.from === mapRoot.id ? 'mm-wire hub' : 'mm-wire'}
+              className={e.from === uniqueRoot.id ? 'mm-wire hub' : 'mm-wire'}
             />
           ))}
         </svg>
@@ -2491,7 +2563,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       setLlmBaseUrl(saved.baseUrl);
       setLlmModel(saved.model);
       setLlmKey('');
-      onToast(saved.provider === 'off' ? '已关闭语言模型。' : '语言模型已保存到本机。默认不会上传整库。');
+      onToast(saved.provider === 'off' ? '已关闭语言模型。' : '语言模型已保存到本机。');
     } catch (e) {
       onToast(explainError(e));
     }
@@ -2529,9 +2601,8 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       <section>
         <h3>一、微信读书 API Key</h3>
         <p className="hint">
-          {hasKey ? '本机已存有 Key。再贴一张会覆盖。' : '还没有保存 Key。'}
-          {' '}到 <a href={WEREAD_SKILLS_URL} onClick={(e) => { e.preventDefault(); void openExternal(WEREAD_SKILLS_URL); }}>weread.qq.com/r/weread-skills</a> 开通官方 Skills，
-          签发以 <code>wrk-</code> 或 <code>WRK-</code> 开头的 Key 后粘贴到这里。
+          {hasKey ? '已保存。' : '未保存。'}
+          在 <a href={WEREAD_SKILLS_URL} onClick={(e) => { e.preventDefault(); void openExternal(WEREAD_SKILLS_URL); }}>weread.qq.com/r/weread-skills</a> 开通 Skills，填入 <code>wrk-</code> Key。
         </p>
         <input
           type="password"
@@ -2553,11 +2624,9 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
           上次全量同步：
           {status?.lastFullSync ? new Date(status.lastFullSync * 1000).toLocaleString() : '从未'}
         </p>
-        <p className="hint">同步入口在顶栏。没有 Key 时按钮是关上的。单本书失败不影响其他书，下次同步自动重试。</p>
       </section>
       <section>
         <h3>三、回顾</h3>
-        <p className="hint">每批翻多少张。小批次完成感更真实，看得到今天还剩多少。</p>
         <div className="row batch-options" role="group" aria-label="每批张数">
           {REVIEW_BATCH_OPTIONS.map((n) => (
             <button
@@ -2574,17 +2643,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       </section>
       <section>
         <h3>四、语言模型</h3>
-        <p className="hint">
-          默认关闭。脑图、问题面等能力需要时才出网；每次只发送当前动作用到的卡片，不会上传整库。
-          Key 存在本机数据目录的 <code>llm.key</code>，与微信读书 Key 分开。
-        </p>
-        <p className="hint">
-          {llm
-            ? (llm.provider === 'off'
-              ? '当前未启用。'
-              : `当前：${LLM_PROVIDERS.find((p) => p.key === llm.provider)?.label ?? llm.provider}${llm.hasKey ? ' · 已存 Key' : ' · 未存 Key'}`)
-            : '载入配置…'}
-        </p>
+        <p className="hint">仅在生成线索时发送当前书的摘录，不上传整库。</p>
         <div className="row batch-options" role="group" aria-label="语言模型供应商">
           {LLM_PROVIDERS.map((p) => (
             <button
@@ -2625,14 +2684,13 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
               placeholder={llm?.hasKey ? '已保存，留空则沿用' : (llmProvider === 'ollama' ? '本机可留空' : 'sk-...')}
               aria-label="语言模型 API Key"
             />
-            <p className="hint">
-              {llmProvider === 'ollama'
-                ? 'Ollama 默认走本机 11434 端口，一般不用 Key。请先在本机运行对应模型。'
-                : llmProvider === 'custom'
-                  ? '兼容 OpenAI 的 /v1 接口即可，例如 DeepSeek、硅基流动。非本机地址必须是 https。'
-                  : 'Key 只存在本机。'}
-              {' '}测试连接只访问 GET /models，不会保存。生成线索走 POST /chat/completions，用的是点「保存到本机」之后的配置。
-            </p>
+            {(llmProvider === 'ollama' || llmProvider === 'custom') && (
+              <p className="hint">
+                {llmProvider === 'ollama'
+                  ? 'Ollama 默认走本机 11434 端口，一般不用 Key。请先在本机运行对应模型。'
+                  : '兼容 OpenAI 的 /v1 接口即可，例如 DeepSeek、硅基流动。非本机地址必须是 https。'}
+              </p>
+            )}
           </>
         )}
         <div className="row">
@@ -2647,7 +2705,6 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       <section>
         <h3>五、关于</h3>
         <p className="hint">数据目录：{status?.dataDir ?? '未知'}（mudflat.db）</p>
-        <p className="hint">纯本地存储 · 无账号 · 无云同步</p>
       </section>
     </div>
   );

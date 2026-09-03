@@ -38,6 +38,23 @@ export function visibleClue(root: MindmapNode, expandedId: string | null): Mindm
   };
 }
 
+/// 模型常把多个主题都写成 t-1。布局用 id 当键，重复 id 会盖掉盒子、边却还按树连，画面上就是双线和断线。
+export function uniquifyNodeIds(root: MindmapNode): MindmapNode {
+  const used = new Set<string>();
+  const walk = (n: MindmapNode): MindmapNode => {
+    const raw = n.id.trim() || 'n';
+    let id = raw;
+    if (used.has(id)) {
+      let i = 2;
+      while (used.has(`${raw}-${i}`)) i += 1;
+      id = `${raw}-${i}`;
+    }
+    used.add(id);
+    return { ...n, id, children: n.children.map(walk) };
+  };
+  return walk(root);
+}
+
 function charCount(s: string): number {
   return [...s].length;
 }
@@ -91,6 +108,7 @@ const EXPAND_ROW = 22;
 
 /// 中心辐射：根在中间，一级沿椭圆均分，二级沿同一方向再外扩。
 export function layoutMindmap(root: MindmapNode, expandIds?: ReadonlySet<string>): MindmapLayout {
+  root = uniquifyNodeIds(root);
   const rootBox = nodeBox(root.label, 0);
   const n = root.children.length;
   let rx = Math.max(220, 48 * Math.max(n, 3));

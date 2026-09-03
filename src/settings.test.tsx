@@ -54,7 +54,7 @@ describe('SettingsView 语言模型', () => {
 
   it('默认关闭时不展示接口地址和 Key', async () => {
     render(<SettingsView onToast={() => {}} hasKey={false} onKeyChange={() => {}} />);
-    await waitFor(() => expect(screen.getByText('当前未启用。')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('仅在生成线索时发送当前书的摘录，不上传整库。')).toBeTruthy());
     expect(screen.queryByLabelText('语言模型接口地址')).toBeNull();
     expect(screen.queryByLabelText('语言模型 API Key')).toBeNull();
   });
