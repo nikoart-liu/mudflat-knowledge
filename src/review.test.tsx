@@ -76,6 +76,12 @@ function mockBackend() {
       case 'set_excluded_from_review':
         backend.excluded.push({ id: Number(args?.id), excluded: Boolean(args?.excluded) });
         return undefined;
+      case 'list_accepted_questions':
+        return [];
+      case 'get_llm_settings':
+        return { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
+      case 'get_review_scaffold':
+        return { paraphrase: null, example: null, neighbors: [], sourceCardIds: [], fromAi: false };
       default:
         throw new Error(`测试未处理的命令: ${cmd}`);
     }

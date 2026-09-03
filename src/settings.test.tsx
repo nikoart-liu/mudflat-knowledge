@@ -13,7 +13,7 @@ vi.mock('./types', async () => {
 
 const callMock = call as unknown as Mock;
 
-const off: LlmSettings = { provider: 'off', baseUrl: '', model: '', hasKey: false };
+const off: LlmSettings = { provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false };
 
 function mockBackend(llm: LlmSettings = off) {
   let stored = llm;
@@ -26,11 +26,13 @@ function mockBackend(llm: LlmSettings = off) {
       case 'get_llm_settings':
         return stored;
       case 'save_llm_settings': {
-        const draft = args?.draft as { provider: LlmSettings['provider']; baseUrl: string; model: string; key: string };
+        const draft = args?.draft as { provider: LlmSettings['provider']; baseUrl: string; model: string; embeddingModel: string; key: string };
         stored = {
           provider: draft.provider,
           baseUrl: draft.baseUrl || (draft.provider === 'openai' ? 'https://api.openai.com/v1' : draft.baseUrl),
           model: draft.model,
+          embeddingModel: draft.embeddingModel
+            || (draft.provider === 'openai' ? 'text-embedding-3-small' : draft.embeddingModel),
           hasKey: draft.provider !== 'off' && (!!draft.key || stored.hasKey),
         };
         return stored;
@@ -40,6 +42,8 @@ function mockBackend(llm: LlmSettings = off) {
         return undefined;
       case 'test_llm_connection':
         return '连接成功：已找到模型 gpt-4o-mini';
+      case 'get_ai_index':
+        return { embeddings: 0, artifacts: 0, providerOff: true, embeddingReady: false };
       default:
         throw new Error(`测试未处理的命令: ${cmd}`);
     }
@@ -54,7 +58,7 @@ describe('SettingsView 语言模型', () => {
 
   it('默认关闭时不展示接口地址和 Key', async () => {
     render(<SettingsView onToast={() => {}} hasKey={false} onKeyChange={() => {}} />);
-    await waitFor(() => expect(screen.getByText('仅在生成线索时发送当前书的摘录，不上传整库。')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/默认关闭/)).toBeTruthy());
     expect(screen.queryByLabelText('语言模型接口地址')).toBeNull();
     expect(screen.queryByLabelText('语言模型 API Key')).toBeNull();
   });
@@ -80,11 +84,19 @@ describe('SettingsView 语言模型', () => {
           provider: 'openai',
           baseUrl: 'https://api.openai.com/v1',
           model: 'gpt-4o-mini',
+          embeddingModel: 'text-embedding-3-small',
           key: 'sk-test',
         },
       });
     });
     expect(toasts.some((t) => t.includes('语言模型已保存'))).toBe(true);
+  });
+
+  it('选 OpenAI 后露出向量模型默认值', async () => {
+    render(<SettingsView onToast={() => {}} hasKey={false} onKeyChange={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'OpenAI' }));
+    const embed = await screen.findByLabelText('向量模型名');
+    expect((embed as HTMLInputElement).value).toBe('text-embedding-3-small');
   });
 
   it('从 OpenAI 切到 Ollama 时换成回环地址', async () => {

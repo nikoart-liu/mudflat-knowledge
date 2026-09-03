@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod db;
 mod gateway;
 mod keystore;
@@ -286,9 +287,45 @@ fn count_cards(state: State<'_, Db>, filter: CardFilter) -> Result<i64, String> 
 }
 
 #[tauri::command]
-fn search_cards(state: State<'_, Db>, q: String, filter: CardFilter) -> Result<Vec<CardRow>, String> {
+async fn search_cards(
+    app: tauri::AppHandle,
+    state: State<'_, Db>,
+    q: String,
+    filter: CardFilter,
+) -> Result<Vec<ai::SearchHit>, String> {
+    let dir = data_dir(&app)?;
+    let now = now_secs();
+    let (lexical, pool, job) = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        let lexical = db::search_cards(&conn, &q, &filter, 200).map_err(db_err)?;
+        let pool = db::query_cards(&conn, &filter, 2_000, 0).map_err(db_err)?;
+        let job = if q.trim().chars().count() >= 4 {
+            ai::plan_embeddings(&conn, &dir, &pool).unwrap_or(None)
+        } else {
+            None
+        };
+        (lexical, pool, job)
+    };
+    if let Some(job) = job {
+        if let Ok(rows) = ai::run_embed_job(&job).await {
+            let conn = state.lock().map_err(|e| e.to_string())?;
+            let _ = ai::commit_embeddings(&conn, &job, rows, now);
+        }
+    }
+    let query_vec = if q.trim().chars().count() >= 4 {
+        ai::embed_query(&dir, &q).await.ok().flatten()
+    } else {
+        None
+    };
+    let Some((provider, model, qv)) = query_vec else {
+        return Ok(ai::lexical_hits(lexical));
+    };
     let conn = state.lock().map_err(|e| e.to_string())?;
-    db::search_cards(&conn, &q, &filter, 200).map_err(db_err)
+    let allowed: std::collections::HashSet<i64> = pool.iter().map(|c| c.id).collect();
+    let by_id: std::collections::HashMap<i64, db::CardRow> = pool.into_iter().map(|c| (c.id, c)).collect();
+    let semantic = ai::semantic_hits_from_store(&conn, &provider, &model, &qv, &allowed, &by_id, 40)
+        .unwrap_or_default();
+    Ok(ai::rrf_merge(&lexical, &semantic, 200))
 }
 
 #[tauri::command]
@@ -469,6 +506,209 @@ async fn generate_mindmap(
     mindmap::generate(&dir, &book, &cards, on_progress).await.map_err(|e| e.to_string())
 }
 
+// ---------- AI：问题面 / 相似卡 / 支架 / 清除派生 ----------
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiIndexInfo {
+    embeddings: i64,
+    artifacts: i64,
+    provider_off: bool,
+    embedding_ready: bool,
+}
+
+#[tauri::command]
+fn get_ai_index(app: tauri::AppHandle, state: State<'_, Db>) -> Result<AiIndexInfo, String> {
+    let dir = data_dir(&app)?;
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    let (embeddings, artifacts) = ai::derived_counts(&conn).map_err(|e| e.to_string())?;
+    let cfg = llm::load_config(&dir).unwrap_or_default();
+    Ok(AiIndexInfo {
+        embeddings,
+        artifacts,
+        provider_off: cfg.provider == llm::Provider::Off,
+        embedding_ready: cfg.provider != llm::Provider::Off && !cfg.embedding_model.trim().is_empty(),
+    })
+}
+
+#[tauri::command]
+fn clear_ai_derived(app: tauri::AppHandle, state: State<'_, Db>) -> Result<AiIndexInfo, String> {
+    let dir = data_dir(&app)?;
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    ai::clear_derived(&conn).map_err(|e| e.to_string())?;
+    let (embeddings, artifacts) = ai::derived_counts(&conn).map_err(|e| e.to_string())?;
+    let cfg = llm::load_config(&dir).unwrap_or_default();
+    Ok(AiIndexInfo {
+        embeddings,
+        artifacts,
+        provider_off: cfg.provider == llm::Provider::Off,
+        embedding_ready: cfg.provider != llm::Provider::Off && !cfg.embedding_model.trim().is_empty(),
+    })
+}
+
+#[tauri::command]
+fn get_question_face(state: State<'_, Db>, card_id: i64) -> Result<Option<ai::QuestionFace>, String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    let card = db::get_card(&conn, card_id).map_err(db_err)?.ok_or_else(|| "找不到这张卡片".to_string())?;
+    ai::get_question_face(&conn, &card).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_accepted_questions(state: State<'_, Db>, card_ids: Vec<i64>) -> Result<Vec<ai::QuestionFace>, String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    ai::accepted_questions(&conn, &card_ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn propose_question_face(
+    app: tauri::AppHandle,
+    state: State<'_, Db>,
+    card_id: i64,
+) -> Result<ai::QuestionFace, String> {
+    let dir = data_dir(&app)?;
+    let card = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        let card = db::get_card(&conn, card_id).map_err(db_err)?.ok_or_else(|| "找不到这张卡片".to_string())?;
+        if let Some(cached) = ai::cached_question(&conn, &card).map_err(|e| e.to_string())? {
+            return Ok(cached);
+        }
+        card
+    };
+    let (cfg, key) = llm::load_runtime(&dir).map_err(|e| e.to_string())?;
+    let raw = ai::chat_complete(
+        &cfg.base_url,
+        &cfg.model,
+        &key,
+        ai::question_system_prompt(),
+        &ai::question_user_prompt(&card),
+        "生成问题面",
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let content = ai::parse_question_response(&raw, &card).map_err(|e| e.to_string())?;
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    ai::store_question(
+        &conn,
+        &card,
+        &content,
+        ai::provider_name(cfg.provider),
+        &cfg.model,
+        now_secs(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn accept_question_face(
+    state: State<'_, Db>,
+    artifact_id: i64,
+    edited: Option<String>,
+) -> Result<ai::QuestionFace, String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    ai::accept_question(&conn, artifact_id, edited.as_deref(), now_secs()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reject_question_face(state: State<'_, Db>, artifact_id: i64) -> Result<(), String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    ai::reject_question(&conn, artifact_id, now_secs()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_related_cards(
+    app: tauri::AppHandle,
+    state: State<'_, Db>,
+    card_id: i64,
+) -> Result<Vec<ai::RelatedCard>, String> {
+    let dir = data_dir(&app)?;
+    let now = now_secs();
+    let (card, pool, job) = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        let card = db::get_card(&conn, card_id).map_err(db_err)?.ok_or_else(|| "找不到这张卡片".to_string())?;
+        let pool = ai::load_related_pool(&conn, &card).map_err(|e| e.to_string())?;
+        let mut to_embed = pool.clone();
+        if !to_embed.iter().any(|c| c.id == card.id) {
+            to_embed.push(card.clone());
+        }
+        let job = ai::plan_embeddings(&conn, &dir, &to_embed).unwrap_or(None);
+        (card, pool, job)
+    };
+    let lexical = ai::related_lexical(&card, &pool, 5);
+    let Some(job) = job else {
+        return Ok(lexical);
+    };
+    match ai::run_embed_job(&job).await {
+        Ok(rows) => {
+            let conn = state.lock().map_err(|e| e.to_string())?;
+            let _ = ai::commit_embeddings(&conn, &job, rows, now);
+            ai::related_from_store(&conn, &job.provider, &job.model, &card, &pool).map_err(|e| e.to_string())
+        }
+        Err(_) => Ok(lexical),
+    }
+}
+
+#[tauri::command]
+fn get_review_scaffold(state: State<'_, Db>, card_id: i64) -> Result<ai::Scaffold, String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    let card = db::get_card(&conn, card_id).map_err(db_err)?.ok_or_else(|| "找不到这张卡片".to_string())?;
+    ai::get_rule_scaffold(&conn, &card).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn propose_review_scaffold(
+    app: tauri::AppHandle,
+    state: State<'_, Db>,
+    card_id: i64,
+) -> Result<ai::Scaffold, String> {
+    let dir = data_dir(&app)?;
+    let (card, rule) = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        let card = db::get_card(&conn, card_id).map_err(db_err)?.ok_or_else(|| "找不到这张卡片".to_string())?;
+        let pool = ai::load_related_pool(&conn, &card).map_err(|e| e.to_string())?;
+        let rule = ai::rule_scaffold(&card, &pool, 3);
+        if let Some(cached) = ai::cached_scaffold(&conn, &card, &pool, &rule).map_err(|e| e.to_string())? {
+            return Ok(cached);
+        }
+        (card, rule)
+    };
+    let (cfg, key) = match llm::load_runtime(&dir) {
+        Ok(v) => v,
+        Err(_) => return Ok(rule),
+    };
+    let allowed: std::collections::HashSet<i64> = rule.source_card_ids.iter().copied().collect();
+    let raw = match ai::chat_complete(
+        &cfg.base_url,
+        &cfg.model,
+        &key,
+        ai::scaffold_system_prompt(),
+        &ai::scaffold_user_prompt(&card, &rule.neighbors),
+        "生成回忆支架",
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(_) => return Ok(rule),
+    };
+    match ai::parse_scaffold_response(&raw, &allowed) {
+        Ok((paraphrase, example, ids)) => {
+            let conn = state.lock().map_err(|e| e.to_string())?;
+            ai::store_scaffold(
+                &conn,
+                &card,
+                &rule,
+                &paraphrase,
+                &example,
+                &ids,
+                ai::provider_name(cfg.provider),
+                &cfg.model,
+                now_secs(),
+            )
+            .map_err(|e| e.to_string())
+        }
+        Err(_) => Ok(rule),
+    }
+}
+
 #[tauri::command]
 fn set_review_batch_size(state: State<'_, Db>, size: i64) -> Result<(), String> {
     if !db::REVIEW_BATCH_OPTIONS.contains(&size) {
@@ -520,6 +760,16 @@ pub fn run() {
             set_review_batch_size,
             get_mindmap_status,
             generate_mindmap,
+            get_ai_index,
+            clear_ai_derived,
+            get_question_face,
+            list_accepted_questions,
+            propose_question_face,
+            accept_question_face,
+            reject_question_face,
+            get_related_cards,
+            get_review_scaffold,
+            propose_review_scaffold,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

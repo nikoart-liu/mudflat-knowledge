@@ -128,6 +128,8 @@ fn fresh_db_is_created_at_latest_version() {
     assert!(column_names(&conn, "books").contains(&"synced_note_count".to_string()));
     assert!(column_names(&conn, "books").contains(&"synced_review_count".to_string()));
     assert!(column_names(&conn, "cards").contains(&"hidden_by_user".to_string()));
+    assert!(column_names(&conn, "card_embeddings").contains(&"vector".to_string()));
+    assert!(column_names(&conn, "ai_artifacts").contains(&"content_json".to_string()));
     assert_eq!(backup_count(&dir), 0, "全新库不产生备份");
     conn.close().unwrap();
     std::fs::remove_dir_all(&dir).ok();

@@ -113,12 +113,13 @@ export interface ReviewSettings {
   batchSize: number;
 }
 
-export type LlmProvider = 'off' | 'openai' | 'ollama' | 'custom';
+export type LlmProvider = 'off' | 'openai' | 'xai' | 'ollama' | 'custom';
 
 export interface LlmSettings {
   provider: LlmProvider;
   baseUrl: string;
   model: string;
+  embeddingModel: string;
   hasKey: boolean;
 }
 
@@ -126,7 +127,60 @@ export interface LlmDraft {
   provider: LlmProvider;
   baseUrl: string;
   model: string;
+  embeddingModel: string;
   key: string;
+}
+
+export type MatchKind = 'lexical' | 'semantic' | 'both';
+
+export interface SearchHit {
+  card: CardRow;
+  matchKind: MatchKind;
+}
+
+export interface QuestionCandidate {
+  kind: string;
+  question: string;
+}
+
+export interface QuestionContent {
+  unsuitable: boolean;
+  reason: string | null;
+  candidates: QuestionCandidate[];
+  acceptedQuestion: string | null;
+}
+
+export interface QuestionFace {
+  artifactId: number;
+  cardId: number;
+  status: 'proposed' | 'accepted' | 'rejected' | 'stale' | string;
+  content: QuestionContent;
+  userEdited: boolean;
+  stale: boolean;
+  provider: string;
+  model: string;
+  promptVersion: string;
+}
+
+export interface RelatedCard {
+  card: CardRow;
+  score: number;
+  reason: string;
+}
+
+export interface Scaffold {
+  paraphrase: string | null;
+  example: string | null;
+  neighbors: CardRow[];
+  sourceCardIds: number[];
+  fromAi: boolean;
+}
+
+export interface AiIndexInfo {
+  embeddings: number;
+  artifacts: number;
+  providerOff: boolean;
+  embeddingReady: boolean;
 }
 
 export interface MindmapNode {

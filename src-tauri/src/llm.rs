@@ -28,6 +28,7 @@ pub type LlmResult<T> = Result<T, LlmError>;
 pub enum Provider {
     Off,
     Openai,
+    Xai,
     Ollama,
     Custom,
 }
@@ -37,6 +38,7 @@ impl Provider {
         match self {
             Provider::Off => "",
             Provider::Openai => "https://api.openai.com/v1",
+            Provider::Xai => "https://api.x.ai/v1",
             Provider::Ollama => "http://127.0.0.1:11434/v1",
             Provider::Custom => "",
         }
@@ -46,8 +48,17 @@ impl Provider {
         match self {
             Provider::Off => "",
             Provider::Openai => "gpt-4o-mini",
+            Provider::Xai => "grok-4.5",
             Provider::Ollama => "qwen2.5",
             Provider::Custom => "",
+        }
+    }
+
+    pub fn default_embedding_model(self) -> &'static str {
+        match self {
+            Provider::Off | Provider::Xai | Provider::Custom => "",
+            Provider::Openai => "text-embedding-3-small",
+            Provider::Ollama => "nomic-embed-text",
         }
     }
 }
@@ -58,6 +69,8 @@ pub struct LlmConfig {
     pub provider: Provider,
     pub base_url: String,
     pub model: String,
+    #[serde(default)]
+    pub embedding_model: String,
 }
 
 impl Default for LlmConfig {
@@ -66,6 +79,7 @@ impl Default for LlmConfig {
             provider: Provider::Off,
             base_url: String::new(),
             model: String::new(),
+            embedding_model: String::new(),
         }
     }
 }
@@ -76,6 +90,7 @@ pub struct LlmSettings {
     pub provider: Provider,
     pub base_url: String,
     pub model: String,
+    pub embedding_model: String,
     pub has_key: bool,
 }
 
@@ -88,6 +103,8 @@ pub struct LlmDraft {
     pub base_url: String,
     #[serde(default)]
     pub model: String,
+    #[serde(default)]
+    pub embedding_model: String,
     #[serde(default)]
     pub key: String,
 }
@@ -113,6 +130,7 @@ pub fn load_settings(dir: &Path) -> LlmResult<LlmSettings> {
         provider: config.provider,
         base_url: config.base_url,
         model: config.model,
+        embedding_model: config.embedding_model,
         has_key: has_key(dir),
     })
 }
@@ -159,6 +177,7 @@ pub fn save(dir: &Path, draft: &LlmDraft, existing_key: Option<&str>) -> LlmResu
             provider: Provider::Off,
             base_url: String::new(),
             model: String::new(),
+            embedding_model: String::new(),
             has_key: false,
         });
     }
@@ -174,6 +193,7 @@ pub fn save(dir: &Path, draft: &LlmDraft, existing_key: Option<&str>) -> LlmResu
         provider: normalized.config.provider,
         base_url: normalized.config.base_url,
         model: normalized.config.model,
+        embedding_model: normalized.config.embedding_model,
         has_key: has_key(dir),
     })
 }
@@ -251,6 +271,7 @@ pub fn normalize_draft(draft: &LlmDraft, existing_key: Option<&str>) -> LlmResul
 
     let base_url = resolve_base_url(draft.provider, &draft.base_url)?;
     let model = resolve_model(draft.provider, &draft.model)?;
+    let embedding_model = resolve_embedding_model(draft.provider, &draft.embedding_model)?;
     let incoming = draft.key.trim();
     let key = if !incoming.is_empty() {
         Some(incoming.to_string())
@@ -265,6 +286,7 @@ pub fn normalize_draft(draft: &LlmDraft, existing_key: Option<&str>) -> LlmResul
             provider: draft.provider,
             base_url,
             model,
+            embedding_model,
         },
         key,
     })
@@ -290,6 +312,10 @@ pub fn chat_url(base_url: &str) -> String {
     format!("{}/chat/completions", base_url.trim_end_matches('/'))
 }
 
+pub fn embeddings_url(base_url: &str) -> String {
+    format!("{}/embeddings", base_url.trim_end_matches('/'))
+}
+
 fn resolve_base_url(provider: Provider, raw: &str) -> LlmResult<String> {
     let trimmed = raw.trim();
     let url = if trimmed.is_empty() {
@@ -303,6 +329,17 @@ fn resolve_base_url(provider: Provider, raw: &str) -> LlmResult<String> {
     };
     validate_endpoint(&url)?;
     Ok(url)
+}
+
+fn resolve_embedding_model(provider: Provider, raw: &str) -> LlmResult<String> {
+    let trimmed = raw.trim();
+    if !trimmed.is_empty() {
+        if trimmed.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(LlmError::Invalid("向量模型名不能含空白或控制字符".into()));
+        }
+        return Ok(trimmed.to_string());
+    }
+    Ok(provider.default_embedding_model().to_string())
 }
 
 fn resolve_model(provider: Provider, raw: &str) -> LlmResult<String> {
@@ -427,6 +464,7 @@ mod tests {
             provider,
             base_url: base.into(),
             model: model.into(),
+            embedding_model: String::new(),
             key: key.into(),
         }
     }
@@ -456,6 +494,7 @@ mod tests {
         let n = normalize_draft(&draft(Provider::Openai, "", "", "sk-abc"), None).unwrap();
         assert_eq!(n.config.base_url, "https://api.openai.com/v1");
         assert_eq!(n.config.model, "gpt-4o-mini");
+        assert_eq!(n.config.embedding_model, "text-embedding-3-small");
         assert_eq!(n.key.as_deref(), Some("sk-abc"));
 
         let err = normalize_draft(&draft(Provider::Openai, "", "", ""), None).unwrap_err();
@@ -527,6 +566,18 @@ mod tests {
             chat_url("https://api.deepseek.com/v1/"),
             "https://api.deepseek.com/v1/chat/completions"
         );
+        assert_eq!(
+            embeddings_url("https://api.openai.com/v1/"),
+            "https://api.openai.com/v1/embeddings"
+        );
+    }
+
+    #[test]
+    fn xai_fills_chat_default_and_leaves_embedding_blank() {
+        let n = normalize_draft(&draft(Provider::Xai, "", "", "xai-key"), None).unwrap();
+        assert_eq!(n.config.base_url, "https://api.x.ai/v1");
+        assert_eq!(n.config.model, "grok-4.5");
+        assert_eq!(n.config.embedding_model, "");
     }
 
     #[test]

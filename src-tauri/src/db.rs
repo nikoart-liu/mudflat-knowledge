@@ -27,7 +27,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CardRow {
     pub id: i64,
@@ -134,7 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_review_due ON review_state(due_at);
 
 /// 当前 schema 版本。SCHEMA_SQL 永远保持 v0.1 形态；
 /// 之后所有 schema 变更只允许以幂等迁移追加（PRD 10.3）。
-pub const LATEST_VERSION: i64 = 1;
+pub const LATEST_VERSION: i64 = 2;
 
 /// v0 → v1（v0.2）：每书同步基线列 + 用户隐藏墓碑。
 /// - 基线列与远端最新计数分开存，供增量同步判断（R0）；
@@ -147,8 +147,38 @@ ALTER TABLE cards ADD COLUMN hidden_by_user INTEGER NOT NULL DEFAULT 0;
 UPDATE cards SET hidden_by_user=1 WHERE deleted=1;
 ";
 
+/// v1 → v2：AI 派生数据与本地向量。原文仍在 cards；问题面/支架/向量独立生命周期。
+pub const MIGRATION_V2_SQL: &str = "
+CREATE TABLE IF NOT EXISTS card_embeddings (
+  card_id INTEGER PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  vector BLOB NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_artifacts (
+  id INTEGER PRIMARY KEY,
+  artifact_type TEXT NOT NULL CHECK (artifact_type IN ('question_face','review_scaffold','topic_brief')),
+  primary_card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  source_card_ids TEXT NOT NULL,
+  input_hash TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('proposed','accepted','rejected','stale')),
+  user_edited INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_artifacts_card ON ai_artifacts(primary_card_id, artifact_type, status);
+CREATE INDEX IF NOT EXISTS idx_card_embeddings_hash ON card_embeddings(content_hash);
+";
+
 /// 迁移清单：(目标版本, SQL)。按序执行，每个迁移在独立事务中恰好跑一次。
-const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_V1_SQL)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_V1_SQL), (2, MIGRATION_V2_SQL)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaPlan {
@@ -594,6 +624,35 @@ fn push_param(params: &mut Vec<Box<dyn rusqlite::ToSql>>, v: impl rusqlite::ToSq
     params.len()
 }
 
+pub fn get_card(conn: &Connection, id: i64) -> DbResult<Option<CardRow>> {
+    let sql = card_select_sql("c.id=?1 AND c.deleted=0");
+    let rows = collect_cards(conn, &sql, &[&id])?;
+    Ok(rows.into_iter().next())
+}
+
+/// 按 id 取可见卡，返回顺序与传入 ids 一致；缺卡/已隐藏的跳过。
+pub fn cards_by_ids(conn: &Connection, ids: &[i64]) -> DbResult<Vec<CardRow>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut conds: Vec<String> = vec!["c.deleted=0".into()];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![];
+    let placeholders = ids
+        .iter()
+        .map(|id| format!("?{}", push_param(&mut params, *id)))
+        .collect::<Vec<_>>()
+        .join(",");
+    conds.push(format!("c.id IN ({placeholders})"));
+    let sql = card_select_sql(&conds.join(" AND "));
+    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = collect_cards(conn, &sql, &refs)?;
+    let pos: std::collections::HashMap<i64, usize> =
+        ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let mut ordered = rows;
+    ordered.sort_by_key(|c| pos.get(&c.id).copied().unwrap_or(usize::MAX));
+    Ok(ordered)
+}
+
 pub fn search_cards(conn: &Connection, q: &str, filter: &CardFilter, limit: i64) -> DbResult<Vec<CardRow>> {
     let trimmed = q.trim();
     // trigram 需要 ≥3 字符；短词回退 LIKE 全表扫描（cards 量级数千，可接受）
@@ -964,6 +1023,24 @@ mod tests {
 
         let all = due_cards(&conn, NOW, 30, None).unwrap();
         assert_eq!(all.len(), 3, "None 仍是整馆队列");
+    }
+
+    #[test]
+    fn get_card_and_cards_by_ids_preserve_order() {
+        let conn = mem();
+        let b1 = book(&conn, "b1", true);
+        let a = card(&conn, b1, "r-a", 0);
+        let b = card(&conn, b1, "r-b", 0);
+        let c = card(&conn, b1, "r-c", 0);
+        assert_eq!(get_card(&conn, a).unwrap().unwrap().text, "r-a");
+        let rows = cards_by_ids(&conn, &[c, a, b]).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![c, a, b]
+        );
+        hide_card_from_user(&conn, b).unwrap();
+        assert!(get_card(&conn, b).unwrap().is_none());
+        assert_eq!(cards_by_ids(&conn, &[b, a]).unwrap().len(), 1);
     }
 
     #[test]

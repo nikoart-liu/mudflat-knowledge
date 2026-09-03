@@ -10,6 +10,12 @@ import {
   type LlmDraft,
   type LlmProvider,
   type LlmSettings,
+  type MatchKind,
+  type QuestionFace,
+  type RelatedCard,
+  type Scaffold,
+  type SearchHit,
+  type AiIndexInfo,
   type Mindmap,
   type MindmapEventPayload,
   type MindmapNode,
@@ -59,6 +65,27 @@ export function buildWallGroups(cards: CardRow[], scope: WallScope): WallGroup[]
   return [...map.values()];
 }
 
+/// 检索结果分成「原词命中」与「意思相关」。both 归入原词，避免同一张卡出现两次。
+export function groupSearchHits(cards: CardRow[], kinds: Map<number, MatchKind>): WallGroup[] {
+  const lexical: CardRow[] = [];
+  const semantic: CardRow[] = [];
+  for (const c of cards) {
+    if (kinds.get(c.id) === 'semantic') semantic.push(c);
+    else lexical.push(c);
+  }
+  const groups: WallGroup[] = [];
+  if (lexical.length) groups.push({ key: 'lexical', label: '原词命中', mono: true, cards: lexical });
+  if (semantic.length) groups.push({ key: 'semantic', label: '意思相关', mono: true, cards: semantic });
+  return groups;
+}
+
+function matchKindLabel(kind: MatchKind | undefined): string | null {
+  if (kind === 'semantic') return '意思相关';
+  if (kind === 'both') return '原词 · 意思';
+  if (kind === 'lexical') return '原词命中';
+  return null;
+}
+
 const PAGE = 500;
 const SEARCH_CAP = 200;
 
@@ -104,11 +131,12 @@ const RATING_DEFS: { key: ReviewRating; num: number; label: string }[] = [
 ];
 
 const REVIEW_BATCH_OPTIONS = [10, 20, 30];
-const LLM_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; model: string }[] = [
-  { key: 'off', label: '关闭', baseUrl: '', model: '' },
-  { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  { key: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5' },
-  { key: 'custom', label: '自定义', baseUrl: '', model: '' },
+const LLM_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; model: string; embeddingModel: string }[] = [
+  { key: 'off', label: '关闭', baseUrl: '', model: '', embeddingModel: '' },
+  { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', embeddingModel: 'text-embedding-3-small' },
+  { key: 'xai', label: 'xAI', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.5', embeddingModel: '' },
+  { key: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5', embeddingModel: 'nomic-embed-text' },
+  { key: 'custom', label: '自定义', baseUrl: '', model: '', embeddingModel: '' },
 ];
 const EXCLUDE_HINT_KEY = 'mudflat.exclude-hint-seen';
 const READING_MODE_KEY = 'mudflat.reading-mode';
@@ -170,6 +198,7 @@ export default function App() {
   const [starredOnly, setStarredOnly] = useState(false);
   const [query, setQuery] = useState('');
   const [cards, setCards] = useState<CardRow[]>([]);
+  const [matchKinds, setMatchKinds] = useState<Map<number, MatchKind>>(new Map());
   const [cardTotal, setCardTotal] = useState(0);
   const [cardsReady, setCardsReady] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -369,9 +398,10 @@ export default function App() {
     try {
       if (q) {
         const filter = searchAll ? emptyFilter() : wallFilter();
-        const rows = await call<CardRow[]>('search_cards', { q, filter });
-        setCards(rows);
-        setCardTotal(rows.length);
+        const hits = await call<SearchHit[]>('search_cards', { q, filter });
+        setCards(hits.map((h) => h.card));
+        setMatchKinds(new Map(hits.map((h) => [h.card.id, h.matchKind])));
+        setCardTotal(hits.length);
         return;
       }
       const filter = wallFilter();
@@ -380,6 +410,7 @@ export default function App() {
         call<number>('count_cards', { filter }),
       ]);
       setCards(rows);
+      setMatchKinds(new Map());
       setCardTotal(total);
     } finally {
       setCardsReady(true);
@@ -535,9 +566,10 @@ export default function App() {
   }, [activeBookId, dueCount]);
 
   const wallGroups = useMemo(() => {
-    if (view.name !== 'cards' || searching) return null;
+    if (view.name !== 'cards') return null;
+    if (searching) return groupSearchHits(cards, matchKinds);
     return buildWallGroups(cards, view.bookId ? 'chapter' : 'book');
-  }, [cards, view, searching]);
+  }, [cards, view, searching, matchKinds]);
 
   // 书内章节数：只在当前墙已全部载入时展示，避免分页时给错数
   const chapterCount = useMemo(() => {
@@ -779,13 +811,13 @@ export default function App() {
                         <span className="g-count">{g.cards.length}</span>
                       </div>
                       {g.cards.map((c) => (
-                        <Card key={c.id} card={c} onEdit={() => setEditing(c)} onChanged={reloadCards} onToast={showToast} />
+                        <Card key={c.id} card={c} matchKind={searching ? matchKinds.get(c.id) : undefined} onEdit={() => setEditing(c)} onChanged={reloadCards} onToast={showToast} />
                       ))}
                     </section>
                   ))
                   : <section className="wall-group">
                     {cards.map((c) => (
-                      <Card key={c.id} card={c} onEdit={() => setEditing(c)} onChanged={reloadCards} onToast={showToast} />
+                      <Card key={c.id} card={c} matchKind={searching ? matchKinds.get(c.id) : undefined} onEdit={() => setEditing(c)} onChanged={reloadCards} onToast={showToast} />
                     ))}
                   </section>)}
                 {cards.length > 0 && cards.length < cardTotal && !searching && (
@@ -970,8 +1002,9 @@ function EmptyWall({
   );
 }
 
-function Card({ card, onEdit, onChanged, onToast }: {
+function Card({ card, matchKind, onEdit, onChanged, onToast }: {
   card: CardRow;
+  matchKind?: MatchKind;
   onEdit: () => void;
   onChanged: () => void;
   onToast: (m: string) => void;
@@ -1019,9 +1052,13 @@ function Card({ card, onEdit, onChanged, onToast }: {
         <button title={isSelf ? '删除' : '隐藏'} aria-label={isSelf ? '删除' : '隐藏'} onClick={remove}><Icon name="trash" size={13} /></button>
       </div>
       <div className="card-eyebrow">
-        {card.tags.length
-          ? card.tags.join(' · ')
-          : isSelf ? '编者按' : card.kind === 'thought' ? '想法' : '划线'}
+        {matchKindLabel(matchKind)
+          ? `${matchKindLabel(matchKind)} · ${card.tags.length
+            ? card.tags.join(' · ')
+            : isSelf ? '编者按' : card.kind === 'thought' ? '想法' : '划线'}`
+          : card.tags.length
+            ? card.tags.join(' · ')
+            : isSelf ? '编者按' : card.kind === 'thought' ? '想法' : '划线'}
       </div>
       <p
         ref={textRef}
@@ -1116,7 +1153,7 @@ function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel }: {
   );
 }
 
-function EditModal({ card, onClose, onSaved, onPatched, onToast }: {
+export function EditModal({ card, onClose, onSaved, onPatched, onToast }: {
   card: CardRow;
   onClose: () => void;
   onSaved: (patch: { note: string; text: string }) => void;
@@ -1129,7 +1166,25 @@ function EditModal({ card, onClose, onSaved, onPatched, onToast }: {
   const [text, setText] = useState(card.text);
   const [tagName, setTagName] = useState('');
   const [included, setIncluded] = useState(!card.excludedFromReview);
+  const [llmOn, setLlmOn] = useState(false);
+  const [face, setFace] = useState<QuestionFace | null>(null);
+  const [faceBusy, setFaceBusy] = useState(false);
+  const [editingQ, setEditingQ] = useState('');
+  const [related, setRelated] = useState<RelatedCard[] | null>(null);
+  const [relatedBusy, setRelatedBusy] = useState(false);
   const isSelf = card.kind === 'self';
+  useEffect(() => {
+    call<LlmSettings>('get_llm_settings')
+      .then((s) => setLlmOn(s.provider !== 'off'))
+      .catch(() => setLlmOn(false));
+    call<QuestionFace | null>('get_question_face', { cardId: card.id })
+      .then((f) => {
+        setFace(f);
+        const q = f?.content.acceptedQuestion ?? f?.content.candidates[0]?.question ?? '';
+        setEditingQ(q);
+      })
+      .catch(() => setFace(null));
+  }, [card.id]);
   const save = async () => {
     if (isSelf && !text.trim()) {
       onToast('卡片正文不能为空。');
@@ -1201,6 +1256,134 @@ function EditModal({ card, onClose, onSaved, onPatched, onToast }: {
           />
           <button onClick={addTag}>加标签</button>
         </div>
+        <section className="ai-block">
+          <div className="ai-block-head">
+            <span className="ai-kicker">建议问题</span>
+            {llmOn && (
+              <button
+                className="ghost"
+                disabled={faceBusy}
+                onClick={async () => {
+                  setFaceBusy(true);
+                  try {
+                    const next = await call<QuestionFace>('propose_question_face', { cardId: card.id });
+                    setFace(next);
+                    setEditingQ(next.content.acceptedQuestion ?? next.content.candidates[0]?.question ?? '');
+                    if (next.content.unsuitable) onToast(next.content.reason || '这段不适合做成问题');
+                  } catch (e) {
+                    onToast(explainError(e));
+                  } finally {
+                    setFaceBusy(false);
+                  }
+                }}
+              >
+                {faceBusy ? '生成中…' : '生成问题面'}
+              </button>
+            )}
+          </div>
+          <p className="hint">只发送本卡正文与批注。采用后才会进入翻牌；原文不会被改写。</p>
+          {face?.stale && <p className="hint">卡片已改，这条问题可能过期。</p>}
+          {face && !face.content.unsuitable && face.content.candidates.length > 0 && face.status !== 'accepted' && (
+            <ul className="ai-candidates">
+              {face.content.candidates.map((c, i) => (
+                <li key={i}>
+                  <p>{c.question}</p>
+                  <button
+                    className="ghost"
+                    onClick={() => setEditingQ(c.question)}
+                  >
+                    选用
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {face && !face.content.unsuitable && (face.content.candidates.length > 0 || face.content.acceptedQuestion) && (
+            <>
+              <textarea
+                rows={2}
+                value={editingQ}
+                onChange={(e) => setEditingQ(e.target.value)}
+                aria-label="问题面"
+                placeholder="编辑后采用"
+              />
+              <div className="row">
+                {face.status !== 'rejected' && (
+                  <button
+                    className="primary"
+                    onClick={async () => {
+                      try {
+                        const next = await call<QuestionFace>('accept_question_face', {
+                          artifactId: face.artifactId,
+                          edited: editingQ.trim() || null,
+                        });
+                        setFace(next);
+                        onToast('已采用建议问题。翻牌时会先看到它。');
+                      } catch (e) {
+                        onToast(explainError(e));
+                      }
+                    }}
+                  >
+                    采用
+                  </button>
+                )}
+                {(face.status === 'accepted' || face.status === 'proposed' || face.status === 'stale') && (
+                  <button
+                    className="ghost"
+                    onClick={async () => {
+                      try {
+                        await call('reject_question_face', { artifactId: face.artifactId });
+                        setFace((f) => f ? { ...f, status: 'rejected', content: { ...f.content, acceptedQuestion: null } } : f);
+                        onToast('已去掉问题面');
+                      } catch (e) {
+                        onToast(explainError(e));
+                      }
+                    }}
+                  >
+                    删除问题面
+                  </button>
+                )}
+              </div>
+              {face.status === 'accepted' && face.content.acceptedQuestion && (
+                <p className="ok">翻牌正面将显示：{face.content.acceptedQuestion}</p>
+              )}
+            </>
+          )}
+        </section>
+        <section className="ai-block">
+          <div className="ai-block-head">
+            <span className="ai-kicker">相关划线</span>
+            <button
+              className="ghost"
+              disabled={relatedBusy}
+              onClick={async () => {
+                setRelatedBusy(true);
+                try {
+                  const rows = await call<RelatedCard[]>('get_related_cards', { cardId: card.id });
+                  setRelated(rows);
+                  if (!rows.length) onToast('暂时没有足够相似的划线');
+                } catch (e) {
+                  onToast(explainError(e));
+                } finally {
+                  setRelatedBusy(false);
+                }
+              }}
+            >
+              {relatedBusy ? '查找中…' : '找相似卡'}
+            </button>
+          </div>
+          {related && related.length > 0 && (
+            <ul className="related-list">
+              {related.map((r) => (
+                <li key={r.card.id}>
+                  <span className="ai-kicker">{r.reason === 'semantic' ? '意思相关' : r.reason === 'same_chapter' ? '同章' : '相似'}</span>
+                  <p>{r.card.text}</p>
+                  <span className="card-source">{[r.card.bookTitle, r.card.chapterTitle].filter(Boolean).join(' / ')}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
         <div className="modal-actions">
           <button className="ghost" onClick={onClose}>取消</button>
           <button className="primary" onClick={save} disabled={isSelf && !text.trim()}>保存</button>
@@ -1283,6 +1466,10 @@ export function ReviewView({ book = null, onToast, onExit }: {
   const [todayLeft, setTodayLeft] = useState(0);
   const [excludeTarget, setExcludeTarget] = useState<CardRow | null>(null);
   const [editing, setEditing] = useState<CardRow | null>(null);
+  const [questions, setQuestions] = useState<Map<number, string>>(new Map());
+  const [scaffold, setScaffold] = useState<Scaffold | null>(null);
+  const [scaffoldBusy, setScaffoldBusy] = useState(false);
+  const [llmOn, setLlmOn] = useState(false);
   const [settling, setSettling] = useState<{ remaining: number; rated: Record<ReviewRating, number>; excluded: number } | null>(null);
   const gradingRef = useRef(false);
   const flyingRef = useRef(false);
@@ -1334,9 +1521,31 @@ export function ReviewView({ book = null, onToast, onExit }: {
     setQueue(cards);
     setIdx(0);
     setFlipped(false);
+    setScaffold(null);
     setDueTotal(due);
     setTodayLeft(due);
+    await loadQuestions(cards);
     setPhase('review');
+  };
+
+  const loadQuestions = async (cards: CardRow[]) => {
+    try {
+      const faces = await call<QuestionFace[]>('list_accepted_questions', { cardIds: cards.map((c) => c.id) });
+      const m = new Map<number, string>();
+      for (const f of faces) {
+        const q = f.content.acceptedQuestion;
+        if (q) m.set(f.cardId, q);
+      }
+      setQuestions(m);
+    } catch {
+      setQuestions(new Map());
+    }
+    try {
+      const s = await call<LlmSettings>('get_llm_settings');
+      setLlmOn(s.provider !== 'off');
+    } catch {
+      setLlmOn(false);
+    }
   };
 
   const refreshDueTotal = async (): Promise<number> => {
@@ -1376,10 +1585,21 @@ export function ReviewView({ book = null, onToast, onExit }: {
     }, 240);
   };
 
+  const advanceAfterScaffold = () => {
+    if (flyingRef.current) return;
+    setScaffold(null);
+    flyOutThen(() => {
+      const nextIdx = idxRef.current + 1;
+      setIdx(nextIdx);
+      if (nextIdx >= queue.length) void settle();
+    });
+  };
+
   const undoLast = async () => {
     const u = lastUndoRef.current;
     if (!u || gradingRef.current) return;
     if (phaseRef.current !== 'review' && phaseRef.current !== 'settling') return;
+    setScaffold(null);
     lastUndoRef.current = null;
     undoGenRef.current += 1;
     settleGenRef.current += 1;
@@ -1427,13 +1647,28 @@ export function ReviewView({ book = null, onToast, onExit }: {
       setTodayLeft((t) => Math.max(0, t - 1));
       setDueNote(`下次回顾 · ${humanizeDue(next.due_at - nowSecs())}`);
       lastUndoRef.current = { kind: 'grade', card, rating, prev: result.prev, idx };
-      gradingRef.current = false;
-      setGrading(false);
       const label = RATING_DEFS.find((d) => d.key === rating)?.label ?? rating;
       offerUndo(`已记为「${label}」`, '撤销（Z）');
+      const hard = rating === 'again' || rating === 'hard';
+      if (hard) {
+        try {
+          const sc = await call<Scaffold>('get_review_scaffold', { cardId: card.id });
+          if (sc.paraphrase || sc.example || sc.neighbors.length) {
+            setScaffold(sc);
+            gradingRef.current = false;
+            setGrading(false);
+            return;
+          }
+        } catch {
+          /* 支架失败不挡翻牌 */
+        }
+      }
+      gradingRef.current = false;
+      setGrading(false);
       flyOutThen(() => {
         const nextIdx = idx + 1;
         setIdx(nextIdx);
+        setScaffold(null);
         if (nextIdx >= queue.length) void settle();
       });
     } catch (e) {
@@ -1511,7 +1746,9 @@ export function ReviewView({ book = null, onToast, onExit }: {
     setQueue(cards);
     setIdx(0);
     setFlipped(false);
+    setScaffold(null);
     setTodayLeft(remaining);
+    await loadQuestions(cards);
     setPhase('review');
   };
 
@@ -1539,6 +1776,13 @@ export function ReviewView({ book = null, onToast, onExit }: {
         void undoLast();
         return;
       }
+      if (scaffold) {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          advanceAfterScaffold();
+        }
+        return;
+      }
       if ((e.key === '1' || e.key === '2' || e.key === '3' || e.key === '4') && flippedRef.current) {
         e.preventDefault();
         const def = RATING_DEFS[Number(e.key) - 1];
@@ -1560,7 +1804,7 @@ export function ReviewView({ book = null, onToast, onExit }: {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, idx, queue, flipped, grading, flying, editing, excludeTarget, entryReady, dueTotal, settling, onExit]);
+  }, [phase, idx, queue, flipped, grading, flying, editing, excludeTarget, entryReady, dueTotal, settling, scaffold, onExit]);
 
   // ---------- 进入页 ----------
   if (phase === 'entry') {
@@ -1664,10 +1908,17 @@ export function ReviewView({ book = null, onToast, onExit }: {
           <div className={`deck-flipper${flipped ? ' flipped' : ''}`}>
             <div className="deck-face back">
               <span className="deck-back-frame" />
-              <div className="deck-back-inner">
-                <span className="deck-back-label">翻牌</span>
-                <span className="deck-back-num mono">{String(idx + 1).padStart(2, '0')}<span> / {queue.length}</span></span>
-              </div>
+              {questions.get(card.id) ? (
+                <div className="deck-back-inner deck-has-question">
+                  <span className="deck-back-label">建议问题</span>
+                  <p className="deck-question">{questions.get(card.id)}</p>
+                </div>
+              ) : (
+                <div className="deck-back-inner">
+                  <span className="deck-back-label">翻牌</span>
+                  <span className="deck-back-num mono">{String(idx + 1).padStart(2, '0')}<span> / {queue.length}</span></span>
+                </div>
+              )}
               <span className="deck-back-hint">空格</span>
             </div>
             <div className="deck-face front">
@@ -1682,7 +1933,7 @@ export function ReviewView({ book = null, onToast, onExit }: {
           </div>
         </div>
       </div>
-      {flipped && (
+      {flipped && !scaffold && (
         <div className="review-rating" role="group" aria-label="记忆评分">
           {RATING_DEFS.map((d) => (
             <button
@@ -1696,7 +1947,7 @@ export function ReviewView({ book = null, onToast, onExit }: {
           ))}
         </div>
       )}
-      {flipped && (
+      {flipped && !scaffold && (
         <div className="review-tools">
           <button
             className="ghost"
@@ -1711,6 +1962,38 @@ export function ReviewView({ book = null, onToast, onExit }: {
           >
             记下想法
           </button>
+        </div>
+      )}
+      {scaffold && (
+        <div className="scaffold-panel">
+          <span className="ai-kicker">换个角度</span>
+          {scaffold.paraphrase && <p className="review-text">{scaffold.paraphrase}</p>}
+          {scaffold.example && <p className="card-note">{scaffold.example}</p>}
+          {scaffold.neighbors.map((n) => (
+            <blockquote key={n.id} className="quote-box">{n.text}</blockquote>
+          ))}
+          <div className="review-tools">
+            {llmOn && !scaffold.fromAi && (
+              <button
+                className="ghost"
+                disabled={scaffoldBusy}
+                onClick={async () => {
+                  setScaffoldBusy(true);
+                  try {
+                    const next = await call<Scaffold>('propose_review_scaffold', { cardId: card.id });
+                    setScaffold(next);
+                  } catch (e) {
+                    onToast(explainError(e));
+                  } finally {
+                    setScaffoldBusy(false);
+                  }
+                }}
+              >
+                {scaffoldBusy ? '生成中…' : '再讲一句'}
+              </button>
+            )}
+            <button className="primary" onClick={advanceAfterScaffold}>下一张（Enter）</button>
+          </div>
         </div>
       )}
       {excludeTarget && (
@@ -2460,9 +2743,11 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
   const [llmProvider, setLlmProvider] = useState<LlmProvider>('off');
   const [llmBaseUrl, setLlmBaseUrl] = useState('');
   const [llmModel, setLlmModel] = useState('');
+  const [llmEmbedding, setLlmEmbedding] = useState('');
   const [llmKey, setLlmKey] = useState('');
   const [llmTesting, setLlmTesting] = useState(false);
   const [llmResult, setLlmResult] = useState<string | null>(null);
+  const [aiIndex, setAiIndex] = useState<AiIndexInfo | null>(null);
 
   useEffect(() => {
     call<SettingsInfo>('get_settings').then(setStatus).catch(() => {});
@@ -2475,10 +2760,12 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
         setLlmProvider(s.provider);
         setLlmBaseUrl(s.baseUrl);
         setLlmModel(s.model);
+        setLlmEmbedding(s.embeddingModel ?? '');
       })
       .catch(() => {
-        setLlm({ provider: 'off', baseUrl: '', model: '', hasKey: false });
+        setLlm({ provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false });
       });
+    call<AiIndexInfo>('get_ai_index').then(setAiIndex).catch(() => {});
   }, []);
 
   const saveBatch = async (size: number) => {
@@ -2520,6 +2807,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
     provider: llmProvider,
     baseUrl: llmBaseUrl.trim(),
     model: llmModel.trim(),
+    embeddingModel: llmEmbedding.trim(),
     key: llmKey.trim(),
   });
 
@@ -2531,6 +2819,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
     if (next === 'off') {
       setLlmBaseUrl('');
       setLlmModel('');
+      setLlmEmbedding('');
       setLlmKey('');
       return;
     }
@@ -2538,8 +2827,11 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       || LLM_PROVIDERS.some((p) => p.baseUrl && p.baseUrl === llmBaseUrl.trim());
     const modelIsPreset = !llmModel.trim()
       || LLM_PROVIDERS.some((p) => p.model && p.model === llmModel.trim());
+    const embedIsPreset = !llmEmbedding.trim()
+      || LLM_PROVIDERS.some((p) => p.embeddingModel && p.embeddingModel === llmEmbedding.trim());
     if (urlIsPreset && preset.baseUrl) setLlmBaseUrl(preset.baseUrl);
     if (modelIsPreset && preset.model) setLlmModel(preset.model);
+    if (embedIsPreset) setLlmEmbedding(preset.embeddingModel);
   };
 
   const testLlm = async () => {
@@ -2562,6 +2854,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       setLlmProvider(saved.provider);
       setLlmBaseUrl(saved.baseUrl);
       setLlmModel(saved.model);
+      setLlmEmbedding(saved.embeddingModel ?? '');
       setLlmKey('');
       onToast(saved.provider === 'off' ? '已关闭语言模型。' : '语言模型已保存到本机。');
     } catch (e) {
@@ -2572,10 +2865,11 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
   const clearLlm = async () => {
     try {
       await call('clear_llm_settings');
-      setLlm({ provider: 'off', baseUrl: '', model: '', hasKey: false });
+      setLlm({ provider: 'off', baseUrl: '', model: '', embeddingModel: '', hasKey: false });
       setLlmProvider('off');
       setLlmBaseUrl('');
       setLlmModel('');
+      setLlmEmbedding('');
       setLlmKey('');
       setLlmResult(null);
       onToast('已清除语言模型配置');
@@ -2643,7 +2937,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       </section>
       <section>
         <h3>四、语言模型</h3>
-        <p className="hint">仅在生成线索时发送当前书的摘录，不上传整库。</p>
+        <p className="hint">默认关闭。线索发当前书摘录，问题面只发本卡，回忆支架发本卡与同章相邻卡。向量在本机保存；无向量模型时仍可用规则版相似卡。</p>
         <div className="row batch-options" role="group" aria-label="语言模型供应商">
           {LLM_PROVIDERS.map((p) => (
             <button
@@ -2675,6 +2969,14 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
               placeholder={LLM_PROVIDERS.find((p) => p.key === llmProvider)?.model || '模型名'}
               aria-label="语言模型名"
             />
+            <label className="field-label" htmlFor="llm-embed">向量模型（可选）</label>
+            <input
+              id="llm-embed"
+              value={llmEmbedding}
+              onChange={(e) => setLlmEmbedding(e.target.value)}
+              placeholder={LLM_PROVIDERS.find((p) => p.key === llmProvider)?.embeddingModel || '留空则不做语义检索'}
+              aria-label="向量模型名"
+            />
             <label className="field-label" htmlFor="llm-key">API Key</label>
             <input
               id="llm-key"
@@ -2701,6 +3003,26 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
           <button className="ghost" onClick={clearLlm} disabled={!llm || (llm.provider === 'off' && !llm.hasKey)}>清除</button>
         </div>
         {llmResult && <p className={llmResult.startsWith('失败') ? 'err' : 'ok'}>{llmResult}</p>}
+        {aiIndex && (aiIndex.embeddings > 0 || aiIndex.artifacts > 0) && (
+          <p className="hint">已索引 {aiIndex.embeddings} 张向量 · {aiIndex.artifacts} 条派生</p>
+        )}
+        <div className="row">
+          <button
+            className="ghost"
+            onClick={async () => {
+              try {
+                const next = await call<AiIndexInfo>('clear_ai_derived');
+                setAiIndex(next);
+                onToast('已删除本机 AI 派生数据与向量索引。原文未改。');
+              } catch (e) {
+                onToast(explainError(e));
+              }
+            }}
+            disabled={!aiIndex || (aiIndex.embeddings === 0 && aiIndex.artifacts === 0)}
+          >
+            删除全部 AI 派生数据
+          </button>
+        </div>
       </section>
       <section>
         <h3>五、关于</h3>

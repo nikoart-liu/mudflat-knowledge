@@ -474,6 +474,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .modal {
   width: min(560px, 90vw); background: var(--paper);
   border: 1px solid var(--ink); border-radius: 0; padding: 24px;
+  max-height: 90vh; overflow-y: auto;
 }
 .modal h3 { margin: 0 0 16px; font-size: 18px; font-weight: 700; letter-spacing: 0; text-wrap: balance; }
 .modal textarea, .modal input:not([type]) {
@@ -498,6 +499,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   color: var(--ember); font-weight: 700; pointer-events: none; font-style: normal;
 }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+.modal .row { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .modal-confirm { width: min(360px, 90vw); }
 .modal-confirm p { margin: 0 0 4px; font-size: 13px; line-height: 1.6; color: var(--ink); }
 /* 破坏性动作：社论红 */
@@ -596,6 +598,39 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 .review-tools { margin-top: 12px; display: flex; justify-content: center; gap: 16px; }
 .review-text { font-size: 19px; line-height: 1.9; white-space: pre-wrap; margin: 0; }
 .review-hint { color: var(--ink-muted); text-align: center; font-size: 13px; margin: 0; }
+
+.ai-block {
+  margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+.ai-block-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 6px;
+}
+.ai-kicker {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.12em; color: var(--ink-muted);
+}
+.ai-candidates { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ai-candidates li {
+  display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start;
+}
+.ai-candidates p { margin: 0; font-size: 13px; line-height: 1.6; }
+.related-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.related-list li p { margin: 4px 0; font-size: 13px; line-height: 1.6; }
+.related-list .card-source { display: block; }
+
+.deck-has-question { padding: 0 24px; }
+.deck-question {
+  margin: 0; font-size: 19px; line-height: 1.9; text-align: center;
+  text-wrap: balance;
+}
+.scaffold-panel {
+  margin-top: 16px; padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.scaffold-panel .review-text { font-size: 16px; line-height: 1.7; }
 
 /* 结算：居中文字 + 返回 */
 .deck-done { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 24px; text-align: center; }
