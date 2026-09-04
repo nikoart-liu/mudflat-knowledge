@@ -247,4 +247,27 @@ describe('SettingsView 关于与更新', () => {
     });
     expect(toasts.some((t) => t.includes('已打开安装包'))).toBe(true);
   });
+
+  it('下载过程中把百分比写到画面，不会一直停在 0%', async () => {
+    const inner = callMock.getMockImplementation();
+    let finish!: (msg: string) => void;
+    const hanging = new Promise<string>((resolve) => { finish = resolve; });
+    callMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'check_for_update') return newer;
+      if (cmd === 'install_update') {
+        const chan = args?.onProgress as { onmessage?: (ev: { stage: string; current: number; total: number }) => void };
+        chan?.onmessage?.({ stage: 'downloading', current: 0, total: 100 });
+        chan?.onmessage?.({ stage: 'downloading', current: 40, total: 100 });
+        return hanging;
+      }
+      return inner!(cmd, args);
+    });
+
+    render(<SettingsView onToast={() => {}} hasKey={false} onKeyChange={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: '检查更新' }));
+    fireEvent.click(await screen.findByRole('button', { name: '下载并安装' }));
+    expect(await screen.findByText('正在下载… 40%')).toBeTruthy();
+    finish('已打开安装包。装好后重新打开应用即可；本地卡片仍在本机，不会丢掉。');
+    expect(await screen.findByText(/已打开安装包/)).toBeTruthy();
+  });
 });

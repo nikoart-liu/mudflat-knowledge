@@ -194,6 +194,15 @@ function clipNotes(s: string): string {
   return `${t.slice(0, 280).trimEnd()}…`;
 }
 
+function formatDownloadProgress(ev: UpdateEventPayload): string | null {
+  if (ev.stage !== 'downloading') return null;
+  if (ev.total > 0) {
+    const pct = Math.min(100, Math.round((ev.current / ev.total) * 100));
+    return `正在下载… ${pct}%`;
+  }
+  return '正在下载…';
+}
+
 function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -376,6 +385,7 @@ export default function App() {
   const lastViewRef = useRef<Exclude<View, { name: 'settings' }>>({ name: 'cards', bookId: null });
   const [updateNotice, setUpdateNotice] = useState<UpdateInfo | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateBusyText, setUpdateBusyText] = useState('正在下载…');
 
   const searching = !!query.trim();
   const hasKey = setup?.hasKey ?? false;
@@ -412,8 +422,13 @@ export default function App() {
 
   const runInstallUpdate = useCallback(async () => {
     setUpdateBusy(true);
+    setUpdateBusyText('正在下载…');
     try {
       const chan = new Channel<UpdateEventPayload>();
+      chan.onmessage = (ev) => {
+        const line = formatDownloadProgress(ev);
+        if (line) setUpdateBusyText(line);
+      };
       const msg = await call<string>('install_update', { onProgress: chan });
       setUpdateNotice(null);
       showToast(msg);
@@ -1041,7 +1056,7 @@ export default function App() {
                 else void openExternal(updateNotice.htmlUrl);
               }}
             >
-              {updateBusy ? '正在下载…' : (updateNotice.assetUrl ? '更新' : '查看发布页')}
+              {updateBusy ? updateBusyText : (updateNotice.assetUrl ? '更新' : '查看发布页')}
             </button>
             <button
               className="ghost"
@@ -3511,14 +3526,12 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
 
   const installNow = async () => {
     setUpdateBusy('install');
-    setUpdateMsg(null);
+    setUpdateMsg('正在下载…');
     try {
       const chan = new Channel<UpdateEventPayload>();
       chan.onmessage = (ev) => {
-        if (ev.stage === 'downloading' && ev.total > 0) {
-          const pct = Math.min(100, Math.round((ev.current / ev.total) * 100));
-          setUpdateMsg(`正在下载… ${pct}%`);
-        }
+        const line = formatDownloadProgress(ev);
+        if (line) setUpdateMsg(line);
       };
       const msg = await call<string>('install_update', { onProgress: chan });
       setUpdateMsg(msg);
@@ -3738,7 +3751,7 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
           </>
         )}
         {updateMsg && (
-          <p className={updateMsg.startsWith('失败') ? 'err' : 'ok'}>{updateMsg}</p>
+          <p className={updateMsg.startsWith('失败') ? 'err' : updateMsg.startsWith('正在下载') ? 'hint' : 'ok'}>{updateMsg}</p>
         )}
         <div className="row">
           <button onClick={() => void checkUpdate()} disabled={updateBusy !== null}>

@@ -3,6 +3,7 @@
 //! 数据源是公开仓库的 `/releases/latest`（不含草稿与预发布）。
 //! 版本比较只看 major.minor.patch；安装是打开下载好的包，不替换正在运行的进程。
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -66,6 +67,8 @@ pub struct Platform {
 pub struct GitHubAsset {
     pub name: String,
     pub browser_download_url: String,
+    #[serde(default)]
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -251,11 +254,27 @@ pub fn evaluate(current: &str, release: &GitHubRelease, platform: Option<Platfor
     }
 }
 
-fn http_client(timeout: Duration) -> UpdateResult<reqwest::Client> {
+fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(15))
         .user_agent(USER_AGENT)
+        // GitHub / CDN 对 HTTP/2 偶发卡住；安装包走 1.1，并跟系统代理（和浏览器同一条路）。
+        .http1_only()
+        .tcp_nodelay(true)
+        .pool_max_idle_per_host(0)
+}
+
+fn http_client(timeout: Duration) -> UpdateResult<reqwest::Client> {
+    client_builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| UpdateError::Network(e.to_string()))
+}
+
+fn download_client() -> UpdateResult<reqwest::Client> {
+    // 不设整段 timeout：大安装包在慢网上会超过 120s，bytes() 被掐断后就报
+    // "error decoding response body"，进度一直停在 0%。
+    client_builder()
         .build()
         .map_err(|e| UpdateError::Network(e.to_string()))
 }
@@ -322,11 +341,142 @@ fn dest_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(if safe.is_empty() { "mudflat-update.bin".into() } else { safe })
 }
 
+const DOWNLOAD_IDLE: Duration = Duration::from_secs(30);
+
+fn resolve_total(content_length: Option<u64>, asset_size: u64) -> i64 {
+    content_length.filter(|&n| n > 0).unwrap_or(asset_size) as i64
+}
+
+/// 第一批字节立刻上报，离开 0%；之后约每 2% 或 64KB 报一次，结束必报。
+fn should_report_progress(downloaded: i64, last_reported: i64, total: i64) -> bool {
+    if downloaded <= last_reported {
+        return false;
+    }
+    if last_reported == 0 {
+        return true;
+    }
+    if total > 0 && downloaded >= total {
+        return true;
+    }
+    let delta = downloaded - last_reported;
+    if total > 0 {
+        delta >= (total / 50).max(64 * 1024)
+    } else {
+        delta >= 256 * 1024
+    }
+}
+
+fn format_bytes(n: i64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let n = n.max(0) as f64;
+    if n >= MB {
+        format!("{:.1} MB", n / MB)
+    } else if n >= KB {
+        format!("{:.0} KB", n / KB)
+    } else {
+        format!("{n:.0} B")
+    }
+}
+
+fn simplify_network(detail: &str) -> String {
+    if detail.contains("error decoding response body") {
+        "安装包没传完，请再试一次或到发布页手动下载".into()
+    } else if detail.contains("timed out") || detail.contains("timeout") {
+        "下载超时。请再试一次或到发布页手动下载。".into()
+    } else {
+        detail.to_string()
+    }
+}
+
+fn network_err(downloaded: i64, e: reqwest::Error) -> UpdateError {
+    let detail = simplify_network(&e.to_string());
+    if downloaded > 0 {
+        UpdateError::Network(format!("下载中断（已下载 {}）: {detail}", format_bytes(downloaded)))
+    } else {
+        UpdateError::Network(detail)
+    }
+}
+
+async fn download_to_path(
+    http: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    fallback_total: i64,
+    mut on_progress: impl FnMut(i64, i64),
+) -> UpdateResult<i64> {
+    let mut resp = http
+        .get(url)
+        .header("Accept", "application/octet-stream")
+        .header("Accept-Encoding", "identity")
+        .send()
+        .await
+        .map_err(|e| network_err(0, e))?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(UpdateError::Failed(format!("下载失败：HTTP {status}")));
+    }
+    let total = resolve_total(resp.content_length(), fallback_total.max(0) as u64);
+    on_progress(0, total);
+
+    let mut file = std::io::BufWriter::new(
+        std::fs::File::create(dest).map_err(|e| UpdateError::Failed(format!("写入安装包失败: {e}")))?,
+    );
+    let mut downloaded: i64 = 0;
+    let mut last_reported: i64 = 0;
+
+    loop {
+        let chunk = tokio::time::timeout(DOWNLOAD_IDLE, resp.chunk())
+            .await
+            .map_err(|_| {
+                UpdateError::Network(if downloaded > 0 {
+                    format!(
+                        "下载中断：长时间没有数据（已下载 {}）。可到发布页手动下载。",
+                        format_bytes(downloaded)
+                    )
+                } else {
+                    "下载中断：长时间没有数据。可到发布页手动下载。".into()
+                })
+            })?
+            .map_err(|e| network_err(downloaded, e))?;
+        let Some(chunk) = chunk else { break };
+        file.write_all(&chunk)
+            .map_err(|e| UpdateError::Failed(format!("写入安装包失败: {e}")))?;
+        downloaded += chunk.len() as i64;
+        if should_report_progress(downloaded, last_reported, total) {
+            on_progress(downloaded, if total > 0 { total } else { downloaded });
+            last_reported = downloaded;
+        }
+    }
+    file.flush()
+        .map_err(|e| UpdateError::Failed(format!("写入安装包失败: {e}")))?;
+
+    if total > 0 && downloaded < total {
+        return Err(UpdateError::Network(format!(
+            "下载不完整（{}/{}）",
+            format_bytes(downloaded),
+            format_bytes(total)
+        )));
+    }
+    if downloaded == 0 {
+        return Err(UpdateError::Failed("下载到空文件".into()));
+    }
+    if last_reported != downloaded {
+        on_progress(downloaded, if total > 0 { total } else { downloaded });
+    }
+    Ok(downloaded)
+}
+
 pub async fn download_and_open(current: &str, on_progress: Channel<UpdateEvent>) -> UpdateResult<String> {
-    let info = check_latest(current).await?;
+    let release = fetch_latest_release()
+        .await?
+        .ok_or_else(|| UpdateError::Failed("已经是最新版本".into()))?;
+    let platform = Platform::current();
+    let info = evaluate(current, &release, platform);
     if !info.available {
         return Err(UpdateError::Failed("已经是最新版本".into()));
     }
+    let asset = platform.and_then(|p| pick_asset(&release.assets, p));
     let (Some(name), Some(url)) = (info.asset_name.as_deref(), info.asset_url.as_deref()) else {
         return Err(UpdateError::Failed(format!(
             "没有本机对应的安装包，请到发布页下载：{}",
@@ -337,25 +487,14 @@ pub async fn download_and_open(current: &str, on_progress: Channel<UpdateEvent>)
         return Err(UpdateError::Failed("安装包地址不是本仓库的 GitHub Release".into()));
     }
 
-    emit(&on_progress, "downloading", 0, 0);
-    let http = http_client(Duration::from_secs(120))?;
-    let resp = http
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| UpdateError::Network(e.to_string()))?;
-    let status = resp.status().as_u16();
-    if !(200..300).contains(&status) {
-        return Err(UpdateError::Failed(format!("下载失败：HTTP {status}")));
-    }
-    let total = resp.content_length().unwrap_or(0) as i64;
-    emit(&on_progress, "downloading", 0, total);
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| UpdateError::Network(e.to_string()))?;
+    let fallback_total = asset.map(|a| a.size as i64).unwrap_or(0);
+    emit(&on_progress, "downloading", 0, fallback_total);
+    let http = download_client()?;
     let path = dest_path(name);
-    std::fs::write(&path, &bytes).map_err(|e| UpdateError::Failed(format!("写入安装包失败: {e}")))?;
+    download_to_path(&http, url, &path, fallback_total, |cur, tot| {
+        emit(&on_progress, "downloading", cur, tot);
+    })
+    .await?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -363,7 +502,6 @@ pub async fn download_and_open(current: &str, on_progress: Channel<UpdateEvent>)
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
         }
     }
-    emit(&on_progress, "downloading", bytes.len() as i64, total.max(bytes.len() as i64));
     emit(&on_progress, "opening", 0, 0);
     open_downloaded(&path)?;
     emit(&on_progress, "done", 0, 0);
@@ -416,6 +554,7 @@ mod tests {
         GitHubAsset {
             name: name.into(),
             browser_download_url: format!("{}v0.2.0/{name}", download_prefix()),
+            size: 0,
         }
     }
 
@@ -537,6 +676,7 @@ mod tests {
         let rel: GitHubRelease = serde_json::from_str(raw).unwrap();
         assert_eq!(rel.tag_name, "v0.1.0");
         assert_eq!(rel.assets[0].name, "mudflat-knowledge_0.1.0_darwin_aarch64.dmg");
+        assert_eq!(rel.assets[0].size, 12);
         let info = evaluate("0.1.0", &rel, Some(Platform { os: Os::Macos, arch: Arch::Aarch64 }));
         assert!(!info.available);
     }
@@ -548,5 +688,123 @@ mod tests {
         ));
         assert!(!allowed_download_url("https://evil.example/a.dmg"));
         assert!(!allowed_download_url("https://github.com/other/repo/releases/download/v1/a.dmg"));
+    }
+
+    #[test]
+    fn content_length_wins_over_asset_size() {
+        assert_eq!(resolve_total(Some(9), 3), 9);
+        assert_eq!(resolve_total(Some(0), 3), 3);
+        assert_eq!(resolve_total(None, 3), 3);
+    }
+
+    #[test]
+    fn first_bytes_leave_zero_percent() {
+        assert!(should_report_progress(8 * 1024, 0, 20 * 1024 * 1024));
+        assert!(!should_report_progress(8 * 1024, 8 * 1024, 20 * 1024 * 1024));
+        assert!(should_report_progress(20 * 1024 * 1024, 19 * 1024 * 1024, 20 * 1024 * 1024));
+    }
+
+    #[test]
+    fn decoding_body_error_is_rewritten() {
+        let msg = simplify_network("error decoding response body");
+        assert!(!msg.contains("error decoding response body"));
+        assert!(msg.contains("没传完"));
+    }
+
+    fn spawn_http(body: Vec<u8>, drop_after: Option<usize>, pause_at: Option<usize>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            if stream.write_all(header.as_bytes()).is_err() {
+                return;
+            }
+            let send_upto = drop_after.unwrap_or(body.len()).min(body.len());
+            let pause_at = pause_at.filter(|&n| n > 0 && n < send_upto);
+            let mut sent = 0;
+            while sent < send_upto {
+                if pause_at == Some(sent) {
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+                let end = (sent + 8 * 1024).min(send_upto);
+                if let Some(at) = pause_at {
+                    if sent < at && end > at {
+                        if stream.write_all(&body[sent..at]).is_err() {
+                            return;
+                        }
+                        sent = at;
+                        continue;
+                    }
+                }
+                if stream.write_all(&body[sent..end]).is_err() {
+                    return;
+                }
+                let _ = stream.flush();
+                sent = end;
+            }
+        });
+        (format!("http://{addr}/pkg.bin"), handle)
+    }
+
+    fn temp_dest() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "mudflat-update-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[tokio::test]
+    async fn streams_progress_before_the_body_finishes() {
+        let body = vec![7u8; 128 * 1024];
+        let (url, server) = spawn_http(body.clone(), None, Some(64 * 1024));
+        let dest = temp_dest();
+        let http = download_client().unwrap();
+        let mut events = Vec::new();
+        let n = download_to_path(&http, &url, &dest, 0, |cur, tot| events.push((cur, tot)))
+            .await
+            .unwrap();
+        let _ = server.join();
+        let got = std::fs::read(&dest).unwrap();
+        let _ = std::fs::remove_file(&dest);
+        assert_eq!(n, body.len() as i64);
+        assert_eq!(got, body);
+        assert!(
+            events.iter().any(|(c, t)| *c > 0 && *t > 0 && c < t),
+            "expected an in-flight percent, got {events:?}"
+        );
+        assert_eq!(events.last().map(|e| e.0), Some(body.len() as i64));
+    }
+
+    #[tokio::test]
+    async fn truncated_body_is_not_a_decode_error() {
+        let body = vec![3u8; 64 * 1024];
+        let (url, server) = spawn_http(body, Some(16 * 1024), None);
+        let dest = temp_dest();
+        let http = download_client().unwrap();
+        let err = download_to_path(&http, &url, &dest, 0, |_, _| {})
+            .await
+            .unwrap_err();
+        let _ = server.join();
+        let _ = std::fs::remove_file(&dest);
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("error decoding response body"),
+            "raw decode error leaked: {msg}"
+        );
+        assert!(
+            msg.contains("下载中断") || msg.contains("下载不完整") || msg.contains("没传完"),
+            "unexpected error: {msg}"
+        );
     }
 }
