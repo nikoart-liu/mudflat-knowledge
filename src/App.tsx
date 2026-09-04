@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState,
+  type PointerEvent, type KeyboardEvent as RKeyboardEvent, type FocusEvent as RFocusEvent } from 'react';
 import { Channel } from '@tauri-apps/api/core';
 import {
   call,
@@ -41,6 +42,14 @@ type View = CardsView | { name: 'review'; bookId: number | null } | { name: 'min
 
 export type WallScope = 'book' | 'chapter';
 export type WallGroup = { key: string; label: string; mono: boolean; cards: CardRow[] };
+export type ChapterTocEntry = { key: string; label: string; count: number };
+
+/// 书内分组键：有章名按 uid；章名空白（哪怕有 uid）归「未分章」。
+/// 墙和目次共用，跳转才找得到同一行。
+function chapterGroupOf(c: CardRow): { key: string; label: string } {
+  const t = c.chapterTitle?.trim();
+  return { key: t ? `c-${c.chapterUid ?? t}` : 'no-chapter', label: t || '未分章' };
+}
 
 /// 卡片墙分组（纯函数，供单测）。保持输入顺序（created_at DESC）：
 /// - scope='book'：总索引按书分组，衬线书名做分隔行；
@@ -54,17 +63,34 @@ export function buildWallGroups(cards: CardRow[], scope: WallScope): WallGroup[]
       key = c.bookTitle || 'self';
       label = c.bookTitle || '自建卡';
     } else {
-      // 以裁切后的章名为准：有章名按 uid 分组；章名空白（哪怕有 uid）归「未分章」，
-      // 因为对用户可辨的只有章名，uid 单独成组只会多出一行无名的分隔线。
-      const t = c.chapterTitle?.trim();
-      key = t ? `c-${c.chapterUid ?? t}` : 'no-chapter';
-      label = t || '未分章';
+      ({ key, label } = chapterGroupOf(c));
     }
     let g = map.get(key);
     if (!g) { g = { key, label, mono, cards: [] }; map.set(key, g); }
     g.cards.push(c);
   }
   return [...map.values()];
+}
+
+/// 书内目次：按 chapterUid 升序（阅读顺序代理），未分章垫底。
+/// 墙仍按最近划过的章在前；目次不跟墙走。
+export function buildChapterToc(cards: CardRow[]): ChapterTocEntry[] {
+  const map = new Map<string, ChapterTocEntry & { uid: number }>();
+  for (const c of cards) {
+    const { key, label } = chapterGroupOf(c);
+    let e = map.get(key);
+    if (!e) {
+      const uid = key === 'no-chapter'
+        ? Number.POSITIVE_INFINITY
+        : (c.chapterUid ?? Number.MAX_SAFE_INTEGER);
+      e = { key, label, count: 0, uid };
+      map.set(key, e);
+    }
+    e.count++;
+  }
+  return [...map.values()]
+    .sort((a, b) => a.uid - b.uid)
+    .map(({ key, label, count }) => ({ key, label, count }));
 }
 
 /// 检索结果分成「原词命中」与「意思相关」。both 归入原词，避免同一张卡出现两次。
@@ -149,6 +175,7 @@ const EMBEDDING_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; m
 ];
 const EXCLUDE_HINT_KEY = 'mudflat.exclude-hint-seen';
 const READING_MODE_KEY = 'mudflat.reading-mode';
+const COLLAPSED_CATS_KEY = 'mudflat.collapsed-cats';
 
 function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
@@ -199,12 +226,102 @@ function Cover({ src, title, large }: { src: string; title: string; large?: bool
   );
 }
 
+function ChapterTocMenu({
+  count,
+  entries,
+  open,
+  onToggle,
+  onJump,
+}: {
+  count: number;
+  entries: ChapterTocEntry[];
+  open: boolean;
+  onToggle: () => void;
+  onJump: (key: string) => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const onToggleRef = useRef(onToggle);
+  onToggleRef.current = onToggle;
+
+  useEffect(() => {
+    if (!open) return;
+    const items = () => [...(wrapRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+    items()[0]?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onToggleRef.current();
+        wrapRef.current?.querySelector<HTMLButtonElement>('.chapter-toc-chip')?.focus();
+        return;
+      }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const list = items();
+      if (!list.length) return;
+      e.preventDefault();
+      const idx = list.indexOf(document.activeElement as HTMLButtonElement);
+      const next = e.key === 'ArrowDown'
+        ? (idx + 1) % list.length
+        : (idx - 1 + list.length) % list.length;
+      list[next].focus();
+    };
+    const onPtr = (e: Event) => {
+      if (!wrapRef.current?.contains(e.target as Node)) onToggleRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('pointerdown', onPtr);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('pointerdown', onPtr);
+    };
+  }, [open]);
+
+  return (
+    <div className="chapter-toc" ref={wrapRef}>
+      <button
+        type="button"
+        className="chip chapter-toc-chip"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-controls="chapter-toc-menu"
+        title="打开章节目次"
+        onClick={onToggle}
+      >
+        章节 {count}
+      </button>
+      {open && (
+        <div id="chapter-toc-menu" className="chapter-toc-menu" role="menu" aria-label="章节目次">
+          {entries.map((e) => (
+            <button
+              key={e.key}
+              type="button"
+              role="menuitem"
+              className="chapter-toc-item"
+              aria-label={`${e.label}，${e.count} 张`}
+              onClick={() => onJump(e.key)}
+            >
+              <span className="chapter-toc-label">{e.label}</span>
+              <span className="chapter-toc-count">{e.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<View>({ name: 'cards', bookId: null });
   const [books, setBooks] = useState<BookRow[]>([]);
   const [tags, setTags] = useState<TagRow[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [starredOnly, setStarredOnly] = useState(false);
+  // 分类树折叠状态：键为大类名，本地记忆（跨会话）；旧版「大类/子类」键自然失配，无害
+  const [collapsedCats, setCollapsedCats] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_CATS_KEY);
+      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch { return new Set(); }
+  });
   const [query, setQuery] = useState('');
   const [cards, setCards] = useState<CardRow[]>([]);
   const [matchKinds, setMatchKinds] = useState<Map<number, MatchKind>>(new Map());
@@ -219,12 +336,15 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; action?: ToastAction } | null>(null);
   const toastTimer = useRef(0);
   const [dueCount, setDueCount] = useState(0);
+  // 侧栏「星标项目」行右缘计数：null = 尚未查得（不渲染，不给假的 0）
+  const [starredCount, setStarredCount] = useState<number | null>(null);
   // 本书翻牌入口：书内到期数（随全局 dueCount 变化重查，覆盖同步后/回顾归来）
   const [bookDue, setBookDue] = useState(0);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   // P1.3 搜索继承上下文：默认只在当前书/标签/星标范围内搜，可一键扩到全部卡片
   const [searchAll, setSearchAll] = useState(false);
   const cardsLoadGen = useRef(0);
+  const [tocOpen, setTocOpen] = useState(false);
   // 长读模式：单栏通读，为「重读一本书的笔记」服务（V 切换，本地记忆）
   const [reading, setReading] = useState(() => {
     try { return localStorage.getItem(READING_MODE_KEY) === '1'; } catch { return false; }
@@ -582,6 +702,174 @@ export default function App() {
     : null;
   const filtered = starredOnly || selectedTagIds.length > 0 || (view.name === 'cards' && view.bookId !== null);
 
+  // 检索范围眉标：范围受限检索时在目录里明示「正在哪里搜」——位置信号不因检索
+  // 熄灯（active 行保留），范围由这行 mono 小字声明（金眉标语义同内容头「检索结果」）。
+  const scopeBook = view.name === 'cards' && view.bookId
+    ? books.find((b) => b.id === view.bookId) ?? null
+    : null;
+  const searchScopeParts = scopeBook ? [`本书 ${scopeBook.title}`] : [];
+  if (starredOnly) searchScopeParts.push('星标');
+  if (selectedTagIds.length > 0) searchScopeParts.push(`${selectedTagIds.length} 标签`);
+  const searchScopeLabel = searchScopeParts.join(' + ');
+
+  // ---- 书籍可见性：本期要目 + 置顶区 + 分类树（一级大类 → 书） + 「新」点 ----
+  // 后端 list_books 已按 pinned DESC → 体量 DESC 排好，树内保持该体量序。
+  // 层级规则（用户定稿 2026-09-04）：分类只到大类一级——数据键「大类-子类」
+  // 在展示层取首段，子类不再出层；无分类书归「未分类」组挂尾。置顶书在树外
+  // 独立成区，但计入大类合计——「右缘合计」名实相符。目录号是终身编目号：
+  // 按入馆次序（DB id 序）分配，置顶/折叠/树内排序变化不改号；跳号正是编目页
+  // 的样子，与复习卡背的「编目大字」同源。
+  const NEW_DOT_WINDOW_MS = 7 * 24 * 3600 * 1000;
+  const isNewBook = useCallback(
+    (b: BookRow) => b.recentCardAt != null && Date.now() - b.recentCardAt * 1000 < NEW_DOT_WINDOW_MS,
+    [],
+  );
+
+  // 大类 = 分类键首段（无段即原值，空归「未分类」）
+  const groupOf = useCallback((b: BookRow) => {
+    const cat = b.category || '未分类';
+    const dash = cat.indexOf('-');
+    return dash === -1 ? cat : cat.slice(0, dash);
+  }, []);
+
+  const catTree = useMemo(() => {
+    const byName = (a: { name: string }, z: { name: string }) => a.name.localeCompare(z.name, 'zh');
+    // 每组：树行不含置顶书（置顶区单列），合计计全量（含置顶）
+    const groups = new Map<string, { rows: BookRow[]; volume: number }>();
+    for (const b of books) {
+      const g = groupOf(b);
+      if (!groups.has(g)) groups.set(g, { rows: [], volume: 0 });
+      const cell = groups.get(g)!;
+      cell.volume += b.noteCount + b.reviewCount;
+      if (!b.pinned) cell.rows.push(b);
+    }
+    return [...groups.entries()]
+      .map(([name, cell]) => ({ name, rows: cell.rows, volume: cell.volume }))
+      .sort((a, z) => z.volume - a.volume || byName(a, z));
+  }, [books, groupOf]);
+
+  // 目录号 = 终身编目号：入馆序（id 序）分配，与版面位置解耦
+  const bookNos = useMemo(() => {
+    const m = new Map<number, number>();
+    [...books].sort((a, z) => a.id - z.id).forEach((b, i) => m.set(b.id, i + 1));
+    return m;
+  }, [books]);
+
+  // 本期要目（近 7 天有新划线）与置顶区：都是目录的索引条目，不是书籍搬家——
+  // 书在树内的位置不动，金点在要目组内退场（组眉标本身就是信号）
+  const pinnedBooks = useMemo(() => books.filter((b) => b.pinned), [books]);
+  const recentBooks = useMemo(() => books.filter((b) => isNewBook(b)), [books, isNewBook]);
+
+  // catLabel：仅置顶行渲染大类小字——置顶区脱离分组，小字补回书架位置；
+  // 树内书行紧贴大类眉标，不重复。完整「大类 · 子类」只在行 title tooltip 保留。
+  const catDisplay = (s: string) => s.replace('-', ' · ');
+  const bookRow = (b: BookRow, catLabel: string, quiet = false) => (
+    <button
+      key={b.id}
+      className={`side-item ${view.name === 'cards' && view.bookId === b.id ? 'active' : ''}`}
+      aria-current={view.name === 'cards' && view.bookId === b.id ? 'true' : undefined}
+      onClick={() => goCards(b.id)}
+      title={[b.title, b.category && catDisplay(b.category)].filter(Boolean).join(' · ')}
+    >
+      <span className="book-no" aria-hidden="true">{String(bookNos.get(b.id) ?? 0).padStart(2, '0')}</span>
+      <span className="grow book-cell">
+        <span className="book-title">{b.title}</span>
+        {/* 分类小字只渲染在置顶行——置顶区是它唯一的分类信息源，对读屏不可隐藏 */}
+        {!!catLabel && <span className="book-cat">{catLabel}</span>}
+      </span>
+      {!quiet && isNewBook(b) && <span className="book-new" role="img" aria-label="最近 7 天有新划线" title="最近 7 天有新划线" />}
+      <span className="count">{b.noteCount + b.reviewCount}</span>
+    </button>
+  );
+
+  const togglePin = useCallback(async (bookId: number, pinned: boolean) => {
+    // 乐观翻转：分组即时移动；成功后 refreshMeta 拿回 SQL 的规范排序（编目号不变，版面位置随迁）
+    setBooks((prev) => prev.map((b) => (b.id === bookId ? { ...b, pinned } : b)));
+    try {
+      await call('set_book_pinned', { bookId, pinned });
+      await refreshMeta();
+    } catch (e) {
+      showToast(`置顶失败：${String(e)}`);
+      await refreshMeta();
+    }
+  }, [refreshMeta, showToast]);
+
+  // 折叠/展开一个分类组（键为大类名），本地记忆
+  const toggleCat = useCallback((key: string) => {
+    setCollapsedCats((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try { localStorage.setItem(COLLAPSED_CATS_KEY, JSON.stringify([...next])); } catch { /* 本地存储不可用时忽略 */ }
+      return next;
+    });
+  }, []);
+
+  // —— 目录键盘漫游：书单整体只占一个 Tab 停靠位（roving tabindex，几百本书不再
+  // Tab 长征）；↑↓ 在可点行间循环移动、Home/End 跳端；0.8s 内连打可打印字符按
+  // 书名前缀跳书（中文直打直中）。←/→ 在层级眉标上收起/展开，方向即语义。
+  const sideListRef = useRef<HTMLDivElement | null>(null);
+  const rovingRef = useRef<HTMLElement | null>(null);
+  const typeBufRef = useRef({ chars: '', at: 0 });
+  const sideItems = useCallback((): HTMLElement[] => {
+    const root = sideListRef.current;
+    return root ? [...root.querySelectorAll<HTMLButtonElement>('button')].filter((el) => !el.disabled) : [];
+  }, []);
+  useEffect(() => {
+    // 每次渲染后重申 roving：折叠/检索/同步造成的行增删后，仍只保留一个停靠位
+    const items = sideItems();
+    if (!items.length) return;
+    if (!rovingRef.current || !items.includes(rovingRef.current)) rovingRef.current = items[0];
+    for (const el of items) {
+      const want = el === rovingRef.current ? 0 : -1;
+      if (el.tabIndex !== want) el.tabIndex = want;
+    }
+  });
+  const onSideFocusCapture = (e: RFocusEvent) => {
+    const el = e.target as HTMLElement;
+    if (rovingRef.current === el) return;
+    rovingRef.current = el;
+    for (const it of sideItems()) it.tabIndex = it === el ? 0 : -1;
+  };
+  const onSideKeyDown = (e: RKeyboardEvent) => {
+    const items = sideItems();
+    if (!items.length) return;
+    const idx = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (idx === -1) { items[0].focus(); return; }
+      items[e.key === 'ArrowDown' ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length].focus();
+      return;
+    }
+    if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      items[e.key === 'Home' ? 0 : items.length - 1].focus();
+      return;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (idx >= 0) {
+        const el = items[idx];
+        if (el.classList.contains('cat-eyebrow')) {
+          const open = el.getAttribute('aria-expanded') === 'true';
+          // ← 收起、→ 展开：方向即语义，不必先看一眼三角再按
+          if ((e.key === 'ArrowLeft') === open) { e.preventDefault(); (el as HTMLButtonElement).click(); }
+        }
+      }
+      return;
+    }
+    // type-ahead：空格（按钮激活）与 /（聚焦检索框）以外的可打印字符
+    if (e.key.length === 1 && e.key !== ' ' && e.key !== '/') {
+      const now = Date.now();
+      const prev = now - typeBufRef.current.at < 800 ? typeBufRef.current.chars : '';
+      const buf = (prev + e.key).toLowerCase();
+      typeBufRef.current = { chars: buf, at: now };
+      const titleOf = (el: HTMLElement) => (el.querySelector('.book-title')?.textContent ?? '').toLowerCase();
+      const hit = items.find((el) => titleOf(el).startsWith(buf))
+        ?? (buf.length > 1 ? items.find((el) => titleOf(el).includes(buf)) : undefined);
+      if (hit) { e.preventDefault(); hit.focus(); }
+    }
+  };
+
   const activeBookId = activeBook?.id ?? null;
   useEffect(() => {
     if (!activeBookId) { setBookDue(0); return; }
@@ -591,6 +879,16 @@ export default function App() {
       .catch(() => { if (alive) setBookDue(0); });
     return () => { alive = false; };
   }, [activeBookId, dueCount]);
+
+  // 星标总数：随卡片墙重查（初次载入 / 星标翻转 / 同步后都会走 setCards），
+  // count_cards 是本地 COUNT，随墙重查的成本可忽略
+  useEffect(() => {
+    let alive = true;
+    call<number>('count_cards', { filter: { ...emptyFilter(), starredOnly: true } })
+      .then((n) => { if (alive) setStarredCount(n); })
+      .catch(() => { if (alive) setStarredCount(null); });
+    return () => { alive = false; };
+  }, [cards]);
 
   const wallGroups = useMemo(() => {
     if (view.name !== 'cards') return null;
@@ -605,6 +903,22 @@ export default function App() {
     for (const c of cards) if (c.chapterUid != null) s.add(c.chapterUid);
     return s.size;
   }, [activeBook, cards]);
+
+  const chapterToc = useMemo(() => {
+    if (!activeBook || searching || cards.length < cardTotal) return [];
+    return buildChapterToc(cards);
+  }, [activeBook, searching, cards, cardTotal]);
+
+  useEffect(() => { setTocOpen(false); }, [view, searching]);
+
+  const jumpToChapter = (key: string) => {
+    setTocOpen(false);
+    const head = mainRef.current?.querySelector<HTMLElement>(`[data-group-key="${CSS.escape(key)}"]`);
+    if (!head) return;
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
+    head.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
+    head.focus({ preventScroll: true });
+  };
 
   const countLabel = (() => {
     if (searching) {
@@ -674,22 +988,31 @@ export default function App() {
         <aside className="sidebar">
           <section className="side-group side-review">
             <button
-              className={`side-item review-cta${dueCount > 0 ? ' due' : ''}${view.name === 'review' ? ' active' : ''}`}
+              className={`side-item review-cta${dueCount > 0 ? ' due' : ''}`}
               onClick={() => setView({ name: 'review', bookId: null })}
               title="翻牌"
-              aria-current={view.name === 'review' ? 'true' : undefined}
             >
               <Icon name="refresh" size={13} />
               <span className="grow">翻牌回顾</span>
               {dueCount > 0 && <span className="count">{dueCount}</span>}
             </button>
           </section>
-          <div className="side-scroll">
+          <div
+            className="side-scroll"
+            ref={sideListRef}
+            onKeyDown={onSideKeyDown}
+            onFocusCapture={onSideFocusCapture}
+          >
             <section className="side-group">
               <h2>书架</h2>
+              {searching && !searchAll && searchScopeLabel && (
+                <div className="scope-eyebrow" title={`检索范围 · ${searchScopeLabel}`}>
+                  检索范围 · {searchScopeLabel}
+                </div>
+              )}
               <button
-                className={`side-item ${!searching && view.name === 'cards' && !view.bookId ? 'active' : ''}`}
-                aria-current={!searching && view.name === 'cards' && !view.bookId ? 'true' : undefined}
+                className={`side-item ${view.name === 'cards' && !view.bookId ? 'active' : ''}`}
+                aria-current={view.name === 'cards' && !view.bookId ? 'true' : undefined}
                 onClick={() => goCards(null)}
               >
                 <Icon name="layers" size={13} />
@@ -697,29 +1020,49 @@ export default function App() {
                 <span className="count">{books.reduce((n, b) => n + b.noteCount + b.reviewCount, 0)}</span>
               </button>
               <button
-                className={`side-item ${!searching && starredOnly ? 'active' : ''}`}
+                className={`side-item ${starredOnly ? 'active' : ''}`}
                 onClick={() => setStarredOnly((v) => !v)}
                 aria-pressed={starredOnly}
                 title="只看星标卡片"
               >
                 <Icon name="star" size={13} />
                 <span className="grow">星标项目</span>
+                {starredCount != null && starredCount > 0 && <span className="count">{starredCount}</span>}
               </button>
-              <div className="sub-eyebrow">刊物</div>
-              {!books.length && <p className="hint">同步之后，有笔记的书会出现在这里。</p>}
-              {books.map((b, i) => (
-                <button
-                  key={b.id}
-                  className={`side-item ${!searching && view.name === 'cards' && view.bookId === b.id ? 'active' : ''}`}
-                  aria-current={!searching && view.name === 'cards' && view.bookId === b.id ? 'true' : undefined}
-                  onClick={() => goCards(b.id)}
-                  title={b.title}
-                >
-                  <span className="book-no" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
-                  <span className="grow book-title">{b.title}</span>
-                  <span className="count">{b.noteCount + b.reviewCount}</span>
-                </button>
-              ))}
+              {!books.length && (
+                <>
+                  <div className="sub-eyebrow">刊物</div>
+                  <p className="hint">同步之后，有笔记的书会出现在这里。</p>
+                </>
+              )}
+              {recentBooks.length > 0 && (
+                <>
+                  <div className="sub-eyebrow">本期要目</div>
+                  {recentBooks.map((b) => bookRow(b, '', true))}
+                </>
+              )}
+              {pinnedBooks.length > 0 && <div className="sub-eyebrow">置顶 · {pinnedBooks.length}</div>}
+              {pinnedBooks.map((b) => bookRow(b, groupOf(b)))}
+              {catTree.map((g) => {
+                const gOpen = !collapsedCats.has(g.name);
+                return (
+                  <Fragment key={g.name}>
+                    <button
+                      className="cat-eyebrow"
+                      aria-expanded={gOpen}
+                      title={gOpen ? `折叠「${g.name}」` : `展开「${g.name}」`}
+                      onClick={() => toggleCat(g.name)}
+                    >
+                      <span className="cat-label">
+                        <span className="cat-caret" aria-hidden="true">{gOpen ? '▾' : '▸'}</span>
+                        <span className="cat-name">{g.name}</span>
+                      </span>
+                      <span className="cat-count">{g.volume}</span>
+                    </button>
+                    {gOpen && g.rows.map((b) => bookRow(b, ''))}
+                  </Fragment>
+                );
+              })}
             </section>
           </div>
           <section className="side-group side-tags">
@@ -776,11 +1119,17 @@ export default function App() {
                         <div className="head-eyebrow">当前刊物</div>
                         <h2>{activeBook.title}</h2>
                         <div className="head-meta">
-                          <span className="author">{activeBook.author || '佚名'}</span>
+                          <span className="author" title={activeBook.author || '佚名'}>{activeBook.author || '佚名'}</span>
                           <span className="chip">划线 {activeBook.noteCount}</span>
                           <span className="chip">想法 {activeBook.reviewCount}</span>
                           {chapterCount > 0 && cards.length >= cardTotal && (
-                            <span className="chip">章节 {chapterCount}</span>
+                            <ChapterTocMenu
+                              count={chapterCount}
+                              entries={chapterToc}
+                              open={tocOpen}
+                              onToggle={() => setTocOpen((v) => !v)}
+                              onJump={jumpToChapter}
+                            />
                           )}
                           {bookDue > 0 && (
                             <button
@@ -813,6 +1162,16 @@ export default function App() {
                   )}
                 </div>
                 <div className="head-actions">
+                  {activeBook && !searching && !emptyLibrary && (
+                    <button
+                      className="ghost view-toggle"
+                      onClick={() => togglePin(activeBook.id, !activeBook.pinned)}
+                      aria-pressed={!!activeBook.pinned}
+                      title={activeBook.pinned ? '从目录置顶区移除' : '置顶这本书（目录顶部常驻）'}
+                    >
+                      {activeBook.pinned ? '已置顶' : '置顶'}
+                    </button>
+                  )}
                   {!searching && !emptyLibrary && (
                     <button
                       className={`ghost view-toggle${readingActive ? ' active' : ''}`}
@@ -834,7 +1193,7 @@ export default function App() {
                 {cards.length > 0 && (wallGroups
                   ? wallGroups.map((g) => (
                     <section className="wall-group" key={g.key}>
-                      <div className="wall-group-head">
+                      <div className="wall-group-head" data-group-key={g.key} tabIndex={-1}>
                         <span className={`g-label${g.mono ? ' mono' : ''}`}>{g.label}</span>
                         <span className="g-count">{g.cards.length}</span>
                       </div>
@@ -2535,7 +2894,7 @@ function ClueProgress({ busy, line, frac, elapsed, fails }: {
       {total > 1 && (
         <div className="mm-progress-meter">
           <div className="mm-progress-bar" aria-hidden="true">
-            <i style={{ width: `${pct}%` }} />
+            <i style={{ transform: `scaleX(${pct / 100})` }} />
           </div>
           <span className="mm-progress-frac mono">{current} / {total}</span>
         </div>

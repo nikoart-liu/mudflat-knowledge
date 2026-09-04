@@ -101,6 +101,15 @@ fn truncate(s: &str, n: usize) -> String {
 
 // ---------- /user/notebooks ----------
 
+/// 书店分类。实测回包 book.categories = [{categoryId, subCategoryId, categoryType, title}]，
+/// title 是「大类-子类」合并串（如「经济理财-财经」）；其余字段不需要，serde 默认忽略。
+/// 实测证据见 docs/research/book-visibility-api-probe.md。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BookCategory {
+    #[serde(default)]
+    pub title: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BookInfo {
     #[serde(rename = "bookId")]
@@ -111,6 +120,8 @@ pub struct BookInfo {
     pub author: String,
     #[serde(default)]
     pub cover: String,
+    #[serde(default)]
+    pub categories: Vec<BookCategory>,
 }
 
 /// 计划契约导出类型：NotebookBook { book, note_count, review_count, sort }（字段名全小写下划线）
@@ -123,6 +134,16 @@ pub struct NotebookBook {
     pub review_count: i64,
     #[serde(default)]
     pub sort: i64,
+    /// 阅读进度百分比（0–100）。实测回包有值；契约文档遗漏，勿按文档以为不存在。
+    #[serde(rename = "readingProgress", default)]
+    pub reading_progress: i64,
+}
+
+impl NotebookBook {
+    /// 首分类标题；无分类返回空串。多分类取第一个（产品决策：只做元数据展示）。
+    pub fn first_category(&self) -> &str {
+        self.book.categories.first().map(|c| c.title.as_str()).unwrap_or("")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -327,8 +348,9 @@ mod tests {
             "totalBookCount": 2,
             "hasMore": 0,
             "books": [
-                {"book": {"bookId": "3300067488", "title": "置身事内", "author": "兰小欢", "cover": "https://x/y.jpg"},
-                 "noteCount": 120, "reviewCount": 5, "sort": 1778312777},
+                {"book": {"bookId": "3300067488", "title": "置身事内", "author": "兰小欢", "cover": "https://x/y.jpg",
+                          "categories": [{"categoryId": 1100000, "subCategoryId": 1100001, "categoryType": 0, "title": "经济理财-财经"}]},
+                 "noteCount": 120, "reviewCount": 5, "sort": 1778312777, "readingProgress": 64},
                 {"book": {"bookId": "912345"}, "noteCount": 3, "reviewCount": 0}
             ]
         }"#;
@@ -337,7 +359,13 @@ mod tests {
         assert_eq!(v.books.len(), 2);
         assert_eq!(v.books[0].book.title, "置身事内");
         assert_eq!(v.books[0].note_count, 120);
+        assert_eq!(v.books[0].sort, 1778312777);
+        assert_eq!(v.books[0].reading_progress, 64, "实测回包含阅读进度百分比");
+        assert_eq!(v.books[0].first_category(), "经济理财-财经");
+        // 无分类的书：categories 缺省为空，first_category 是空串
         assert_eq!(v.books[1].sort, 0);
+        assert_eq!(v.books[1].reading_progress, 0);
+        assert_eq!(v.books[1].first_category(), "");
     }
 
     #[test]

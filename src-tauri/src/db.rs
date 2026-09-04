@@ -20,6 +20,13 @@ pub struct BookRow {
     #[serde(default = "default_true")]
     pub sync_reviews: bool,
     pub synced_at: Option<i64>,
+    /// 用户本地置顶。排序由 SQL pinned DESC 保证，前端按此拆分组。
+    pub pinned: bool,
+    /// 远端首分类标题（「大类-子类」合并串），无分类为空串。
+    pub category: String,
+    /// 本书全部未删卡的最大 created_at（= 最近一次划线/想法时间），无卡为 None。
+    /// 「新」点的判定数据，时间窗由前端定。
+    pub recent_card_at: Option<i64>,
 }
 
 #[allow(dead_code)] // serde(default) 引用，前端反序列化兜底用
@@ -134,7 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_review_due ON review_state(due_at);
 
 /// 当前 schema 版本。SCHEMA_SQL 永远保持 v0.1 形态；
 /// 之后所有 schema 变更只允许以幂等迁移追加（PRD 10.3）。
-pub const LATEST_VERSION: i64 = 2;
+pub const LATEST_VERSION: i64 = 3;
 
 /// v0 → v1（v0.2）：每书同步基线列 + 用户隐藏墓碑。
 /// - 基线列与远端最新计数分开存，供增量同步判断（R0）；
@@ -177,8 +184,17 @@ CREATE INDEX IF NOT EXISTS idx_ai_artifacts_card ON ai_artifacts(primary_card_id
 CREATE INDEX IF NOT EXISTS idx_card_embeddings_hash ON card_embeddings(content_hash);
 ";
 
+/// v2 → v3：书籍可见性。置顶（本地布尔）、远端最近笔记时间、首分类标题。
+/// wr_sort 只入库备将来排序用，当前不导出到前端；pinned 是用户本地状态，
+/// upsert_book 不得覆盖。
+pub const MIGRATION_V3_SQL: &str = "
+ALTER TABLE books ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE books ADD COLUMN wr_sort INTEGER;
+ALTER TABLE books ADD COLUMN category TEXT NOT NULL DEFAULT '';
+";
+
 /// 迁移清单：(目标版本, SQL)。按序执行，每个迁移在独立事务中恰好跑一次。
-const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_V1_SQL), (2, MIGRATION_V2_SQL)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_V1_SQL), (2, MIGRATION_V2_SQL), (3, MIGRATION_V3_SQL)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaPlan {
@@ -290,13 +306,17 @@ pub fn open_db(app_data_dir: &Path) -> DbResult<Connection> {
 
 pub fn upsert_book(conn: &Connection, b: &NewBook) -> DbResult<()> {
     conn.execute(
-        "INSERT INTO books (weread_book_id, title, author, cover, reading_progress, note_count, review_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO books (weread_book_id, title, author, cover, reading_progress, note_count, review_count, wr_sort, category)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(weread_book_id) DO UPDATE SET
            title=excluded.title, author=excluded.author, cover=excluded.cover,
            reading_progress=excluded.reading_progress,
-           note_count=excluded.note_count, review_count=excluded.review_count",
-        rusqlite::params![b.weread_book_id, b.title, b.author, b.cover, b.reading_progress, b.note_count, b.review_count],
+           note_count=excluded.note_count, review_count=excluded.review_count,
+           wr_sort=COALESCE(excluded.wr_sort, wr_sort), category=excluded.category",
+        rusqlite::params![
+            b.weread_book_id, b.title, b.author, b.cover, b.reading_progress,
+            b.note_count, b.review_count, b.wr_sort, b.category,
+        ],
     )?;
     Ok(())
 }
@@ -310,12 +330,21 @@ pub struct NewBook {
     pub reading_progress: i64,
     pub note_count: i64,
     pub review_count: i64,
+    /// 远端「最近笔记时间」（notebooks.sort），0/未知传 None，入库不覆盖旧值
+    pub wr_sort: Option<i64>,
+    /// 远端首分类标题；空串表示无分类
+    pub category: String,
 }
 
 pub fn list_books(conn: &Connection) -> DbResult<Vec<BookRow>> {
+    // 置顶书排最前（pinned DESC），其后仍按笔记体量目录序；
+    // recent 子查询是「新」点数据源：本书未删卡的最大 created_at。
     let mut stmt = conn.prepare_cached(
-        "SELECT id, weread_book_id, title, author, cover, reading_progress, note_count, review_count, sync_reviews, synced_at
-         FROM books ORDER BY note_count + review_count DESC, title",
+        "SELECT b.id, b.weread_book_id, b.title, b.author, b.cover, b.reading_progress,
+                b.note_count, b.review_count, b.sync_reviews, b.synced_at, b.pinned, b.category,
+                (SELECT MAX(c.created_at) FROM cards c WHERE c.book_id = b.id AND c.deleted = 0)
+         FROM books b
+         ORDER BY b.pinned DESC, b.note_count + b.review_count DESC, b.title",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(BookRow {
@@ -329,6 +358,9 @@ pub fn list_books(conn: &Connection) -> DbResult<Vec<BookRow>> {
             review_count: r.get(7)?,
             sync_reviews: r.get::<_, i64>(8)? != 0,
             synced_at: r.get(9)?,
+            pinned: r.get::<_, i64>(10)? != 0,
+            category: r.get(11)?,
+            recent_card_at: r.get(12)?,
         })
     })?;
     rows.collect()
@@ -338,6 +370,15 @@ pub fn set_book_sync_reviews(conn: &Connection, book_row_id: i64, enabled: bool)
     conn.execute(
         "UPDATE books SET sync_reviews=?2 WHERE id=?1",
         rusqlite::params![book_row_id, enabled as i64],
+    )?;
+    Ok(())
+}
+
+/// 置顶/取消置顶。纯本地状态，不参与同步，也不会被 upsert_book 覆盖。
+pub fn set_book_pinned(conn: &Connection, book_row_id: i64, pinned: bool) -> DbResult<()> {
+    conn.execute(
+        "UPDATE books SET pinned=?2 WHERE id=?1",
+        rusqlite::params![book_row_id, pinned as i64],
     )?;
     Ok(())
 }
@@ -982,6 +1023,8 @@ mod tests {
                 reading_progress: 0,
                 note_count: 3,
                 review_count: 1,
+                wr_sort: None,
+                category: String::new(),
             },
         )
         .unwrap();
@@ -1069,5 +1112,69 @@ mod tests {
         assert_eq!(due_count(&conn, NOW, None).unwrap(), 1);
         assert_eq!(due_count(&conn, NOW, Some(off)).unwrap(), 0);
         assert_eq!(due_count(&conn, NOW, Some(on)).unwrap(), 1);
+    }
+
+    #[test]
+    fn pinned_book_leads_list_and_survives_upsert() {
+        let conn = mem();
+        // 体量：b-big > b-small；都不置顶时按体量排
+        upsert_book(&conn, &NewBook {
+            weread_book_id: "big".into(), title: "大书".into(), author: String::new(),
+            cover: String::new(), reading_progress: 0, note_count: 50, review_count: 0,
+            wr_sort: Some(1_000), category: "经济理财-理财".into(),
+        }).unwrap();
+        upsert_book(&conn, &NewBook {
+            weread_book_id: "small".into(), title: "小书".into(), author: String::new(),
+            cover: String::new(), reading_progress: 0, note_count: 2, review_count: 0,
+            wr_sort: Some(500), category: String::new(),
+        }).unwrap();
+
+        let small = find_book_row(&conn, "small").unwrap().unwrap();
+        let titles = |rows: &[BookRow]| -> Vec<String> { rows.iter().map(|b| b.title.clone()).collect() };
+
+        assert_eq!(titles(&list_books(&conn).unwrap()), vec!["大书", "小书"]);
+
+        // 小书置顶后越过体量大的书
+        set_book_pinned(&conn, small, true).unwrap();
+        assert_eq!(titles(&list_books(&conn).unwrap()), vec!["小书", "大书"]);
+
+        // 同步 upsert 覆盖展示列，但 pinned 是本地状态不得被重置；wr_sort 未知时不覆盖旧值
+        upsert_book(&conn, &NewBook {
+            weread_book_id: "small".into(), title: "小书".into(), author: String::new(),
+            cover: String::new(), reading_progress: 42, note_count: 9, review_count: 0,
+            wr_sort: None, category: String::new(),
+        }).unwrap();
+        let rows = list_books(&conn).unwrap();
+        assert_eq!(titles(&rows), vec!["小书", "大书"], "同步后置顶仍在前");
+        let small_row = rows.iter().find(|b| b.id == small).unwrap();
+        assert!(small_row.pinned, "同步 upsert 不得覆盖 pinned");
+        assert_eq!(small_row.reading_progress, 42, "真实阅读进度应随同步更新");
+        let small_sort: Option<i64> = conn
+            .query_row("SELECT wr_sort FROM books WHERE id=?1", [small], |r| r.get(0))
+            .unwrap();
+        assert_eq!(small_sort, Some(500), "wr_sort 未知（NULL）时不得覆盖旧值");
+
+        // 取消置顶恢复体量序
+        set_book_pinned(&conn, small, false).unwrap();
+        assert_eq!(titles(&list_books(&conn).unwrap()), vec!["大书", "小书"]);
+    }
+
+    #[test]
+    fn recent_card_at_tracks_latest_local_card() {
+        let conn = mem();
+        let b1 = book(&conn, "b1", true);
+        let b2 = book(&conn, "b2", true);
+        card(&conn, b1, "r-1", 0);
+        let newer = card(&conn, b1, "r-2", 0);
+        conn.execute("UPDATE cards SET created_at=?1 WHERE id=?2", rusqlite::params![NOW + 500, newer]).unwrap();
+        // 软删卡不参与「最近」判定
+        let hidden = card(&conn, b2, "r-3", 0);
+        conn.execute("UPDATE cards SET deleted=1 WHERE id=?1", rusqlite::params![hidden]).unwrap();
+
+        let rows = list_books(&conn).unwrap();
+        let b1_row = rows.iter().find(|b| b.id == b1).unwrap();
+        let b2_row = rows.iter().find(|b| b.id == b2).unwrap();
+        assert_eq!(b1_row.recent_card_at, Some(NOW + 500), "取本书未删卡的最大 created_at");
+        assert_eq!(b2_row.recent_card_at, None, "只有软删卡的书无最近卡时间");
     }
 }

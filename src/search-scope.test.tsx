@@ -18,6 +18,7 @@ const books: BookRow[] = [
   {
     id: 1, wereadBookId: 'w1', title: '置身事内', author: '兰小欢', cover: '',
     readingProgress: 0, noteCount: 2, reviewCount: 0, syncReviews: true, syncedAt: null,
+    pinned: false, category: '', recentCardAt: null,
   },
 ];
 

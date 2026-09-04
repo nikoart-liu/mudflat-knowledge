@@ -48,6 +48,8 @@ Windows 安装包使用 NSIS（`.exe`），不生成 MSI：WiX 无法处理中�
 
 唯一权威接口文档克隆在 `docs/weread-skills.md`（Tencent/WeChatReading skills/notes.md，v1.0.4）。要点：业务参数与 `api_name`、`skill_version` 平铺在 body 顶层；禁止 `params` 包裹与 `offset/limit`；`/review/list/mine` 的参数名是小写 `bookid`；`noteCount` 是划线条数而非总笔记数。
 
+文档与真实回包的已知偏差（实测验证见 `docs/research/book-visibility-api-probe.md`）：`books[].book.categories` 实际存在且全覆盖（文档未记录）；`readingProgress` 为 0–100 百分比；`markedStatus` 实测值域 {1,2,3,4}，与文档「1=读完, 0=在读」不符，勿按文档使用。
+
 ## 代码结构
 
 ```

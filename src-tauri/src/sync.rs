@@ -104,9 +104,12 @@ pub async fn run_sync(
                     title: nb.book.title.clone(),
                     author: nb.book.author.clone(),
                     cover: nb.book.cover.clone(),
-                    reading_progress: 0,
+                    reading_progress: nb.reading_progress,
                     note_count: nb.note_count,
                     review_count: nb.review_count,
+                    // 远端「最近笔记时间」；0 视为未知，不覆盖旧值
+                    wr_sort: (nb.sort > 0).then_some(nb.sort),
+                    category: nb.first_category().to_string(),
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -327,6 +330,8 @@ mod tests {
                 reading_progress: 0,
                 note_count: 3,
                 review_count: 1,
+                wr_sort: None,
+                category: String::new(),
             },
         )
         .unwrap();
@@ -394,6 +399,8 @@ mod tests {
                 reading_progress: 0,
                 note_count: 9, // 远端涨了
                 review_count: 1,
+                wr_sort: None,
+                category: String::new(),
             },
         )
         .unwrap();

@@ -28,6 +28,7 @@ const NOW = 1_700_000_000;
 const book: BookRow = {
   id: 1, wereadBookId: 'w1', title: '置身事内', author: '兰小欢', cover: '',
   readingProgress: 0, noteCount: 1, reviewCount: 0, syncReviews: true, syncedAt: NOW,
+  pinned: false, category: '经济理财-财经', recentCardAt: null,
 };
 
 const card: CardRow = {
@@ -47,7 +48,7 @@ const backend = {
 };
 
 function mockBackend() {
-  callMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+  callMock.mockImplementation(async (cmd: string, _args?: Record<string, unknown>) => {
     switch (cmd) {
       case 'get_setup_status':
         return { hasKey: backend.hasKey, hasBooks: backend.hasBooks };

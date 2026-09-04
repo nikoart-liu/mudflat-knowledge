@@ -357,6 +357,12 @@ fn set_book_sync_reviews(state: State<'_, Db>, book_id: i64, enabled: bool) -> R
     db::set_book_sync_reviews(&conn, book_id, enabled).map_err(db_err)
 }
 
+#[tauri::command]
+fn set_book_pinned(state: State<'_, Db>, book_id: i64, pinned: bool) -> Result<(), String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    db::set_book_pinned(&conn, book_id, pinned).map_err(db_err)
+}
+
 // ---------- cards ----------
 
 #[tauri::command]
@@ -836,6 +842,7 @@ pub fn run() {
             sync_all,
             list_books,
             set_book_sync_reviews,
+            set_book_pinned,
             query_cards,
             count_cards,
             search_cards,

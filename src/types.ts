@@ -13,6 +13,12 @@ export interface BookRow {
   reviewCount: number;
   syncReviews: boolean;
   syncedAt: number | null;
+  /** 用户本地置顶；列表已按置顶在前排序 */
+  pinned: boolean;
+  /** 远端首分类标题（「大类-子类」串），无分类为空串 */
+  category: string;
+  /** 本书未删卡的最近 created_at（秒）；无卡为 null。侧栏「新」点判定数据 */
+  recentCardAt: number | null;
 }
 
 export interface CardRow {

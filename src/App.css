@@ -81,7 +81,7 @@ h1, h2, h3, .serif { font-family: var(--font-display); letter-spacing: -0.01em; 
 
 /* ---------- 焦点可见性 ---------- */
 button:focus-visible, input:focus-visible, textarea:focus-visible,
-a:focus-visible, summary:focus-visible {
+a:focus-visible, summary:focus-visible, .wall-group-head:focus-visible {
   outline: 2px solid var(--ember);
   outline-offset: 1px;
 }
@@ -155,13 +155,22 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   font-family: var(--font-mono); font-size: 9px; color: var(--ink-muted);
   letter-spacing: 0.14em; margin: 14px 0 4px; padding: 0 16px;
 }
+/* 检索范围眉标：范围受限检索时声明「正在哪里搜」。金眉标 = 承诺位语义
+   （同内容头「检索结果」），deep 级保 panel 底 6.4:1 AA */
+.scope-eyebrow {
+  font-family: var(--font-mono); font-size: 9px; color: var(--ember-deep);
+  letter-spacing: 0.14em; margin: 0 0 4px; padding: 0 16px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .side-item {
-  display: flex; align-items: center; gap: 8px; width: 100%;
+  display: flex; align-items: center; gap: 6px; width: 100%;
   padding: 7px 16px; margin: 0; border: none; border-left: 2px solid transparent; border-radius: 0;
   background: transparent; text-align: left; font-size: 13px; font-weight: 400;
   letter-spacing: normal;
 }
-.side-item:hover:not(:disabled) { background: var(--selection); border-color: transparent; }
+/* hover 只换底色，不碰边框——active 行的 2px 左墨轨在 hover 下必须幸存
+   （border-color 简写会以更高特异性吞掉墨轨，是目录一致性 bug 的根源） */
+.side-item:hover:not(:disabled) { background: var(--selection); }
 /* 激活态：selection 底 + 左墨轨 */
 .side-item.active { background: var(--selection); font-weight: 500; border-left-color: var(--ink); }
 .side-item .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -169,7 +178,8 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   font-family: var(--font-mono);
   font-size: 10px; font-variant-numeric: tabular-nums; color: var(--ink-muted);
 }
-.side-item svg { color: var(--ink-muted); flex-shrink: 0; }
+/* icon 行与书行共用 40px 文本起点：icon 13px + 5px 补差 + 6px gap = 书名列起点 */
+.side-item svg { color: var(--ink-muted); flex-shrink: 0; margin-right: 5px; }
 .side-item.active svg { color: var(--ink); }
 /* selection 底上的小字计数与序号转 muted-deep：AA 规则（DESIGN.md 墨阶）在 hover/active 态同样生效 */
 .side-item:hover .count, .side-item:hover .book-no,
@@ -177,10 +187,36 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
 /* 目录里的书行：mono 序号 + 衬线书名 + mono 计数 */
 .book-no {
   font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted);
-  width: 20px; text-align: center; flex-shrink: 0; font-variant-numeric: tabular-nums;
+  min-width: 18px; text-align: center; flex-shrink: 0; font-variant-numeric: tabular-nums;
 }
-.book-title { font-family: var(--font-display); font-size: 14px; font-weight: 700; }
+.book-title { font-family: var(--font-display); font-size: 13px; font-weight: 700; }
 .side-item.active .book-title { font-style: italic; }
+/* 书行双行结构：衬线书名 + mono 分类小字（远端分类元数据，无分类不占位） */
+.side-item .book-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.side-item .book-cell .book-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.book-cat {
+  font-family: var(--font-mono); font-size: 10px; color: var(--ink-muted);
+  letter-spacing: 0.04em; font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.side-item:hover .book-cat, .side-item.active .book-cat { color: var(--ink-muted-deep); }
+/* 「新」点：近 7 天有新划线的书。实底金方点，语义同到期徽标，直角不破刊物语言 */
+.book-new { width: 5px; height: 5px; background: var(--ember); flex-shrink: 0; }
+/* 分类组眉标：可点的栏目头，比组眉标（10px）大一阶以示可按；9px 汉字 mono 低于辨识下限。
+   右缘 mono 计数。可点折叠（button）：重置全局 button 基线（边框/字重/内距），hover 只加深文字不加底。 */
+.cat-eyebrow {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  width: 100%; margin: 14px 0 0; padding: 7px 16px; border: none; border-radius: 0;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 400;
+  letter-spacing: 0.14em; color: var(--ink-muted); text-align: left;
+  background: transparent;
+}
+.cat-eyebrow:hover:not(:disabled),
+.cat-eyebrow:focus-visible { background: transparent; color: var(--ink); }
+.cat-label { display: flex; align-items: baseline; gap: 4px; min-width: 0; flex: 1; }
+.cat-caret { flex-shrink: 0; letter-spacing: normal; }
+.cat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-count { font-variant-numeric: tabular-nums; letter-spacing: normal; flex-shrink: 0; }
 .hint { font-size: 11px; color: var(--ink-muted); line-height: 1.7; padding: 0 16px; }
 /* 中滚动区：书单只在剩余空间内滚动 */
 .side-scroll { flex: 1; min-height: 0; overflow-y: auto; }
@@ -275,13 +311,26 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   font-family: var(--font-mono); font-size: 11px; font-weight: 700;
   color: var(--ember); letter-spacing: 0.2em; margin-bottom: 6px;
 }
-.head-meta { display: flex; align-items: center; gap: 12px; margin-top: 8px; font-size: 12px; color: var(--ink); }
-.author { font-family: var(--font-display); font-style: italic; font-size: 14px; }
+.head-meta { display: flex; align-items: center; gap: 12px; margin-top: 8px; font-size: 12px; color: var(--ink); min-width: 0; }
+.author {
+  font-family: var(--font-display); font-style: italic; font-size: 14px;
+  min-width: 0; flex: 0 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.head-meta .chip,
+.head-meta .due-chip,
+.head-meta .link-btn,
+.head-meta .card-date,
+.head-meta .chapter-toc { flex-shrink: 0; white-space: nowrap; }
 .head-meta .chip {
   margin: 0; border-color: var(--hairline); color: var(--ink-muted);
   font-family: var(--font-mono); font-weight: 400; font-size: 10px; padding: 2px 8px;
 }
 .head-meta .chip:hover { background: transparent; color: var(--ink); }
+.head-meta .chapter-toc-chip:hover { background: var(--selection); color: var(--ink); }
+.head-meta .chapter-toc-chip[aria-expanded="true"] {
+  background: var(--ink); color: var(--paper); border-color: var(--ink);
+}
 .head-meta .card-date {
   font-family: var(--font-mono); font-size: 10px;
   background: var(--ink); color: var(--paper); padding: 3px 8px;
@@ -294,6 +343,32 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   font-variant-numeric: tabular-nums; padding: 3px 8px; line-height: 1.5;
 }
 .due-chip:hover:not(:disabled) { background: var(--ember-deep); }
+/* 书内目次：章节 chip 展开直角墨框篇目，点章滚到分隔行 */
+.chapter-toc { position: relative; }
+.chapter-toc-menu {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 20;
+  min-width: 240px; max-width: min(360px, 70vw);
+  max-height: min(360px, 60vh); overflow-y: auto;
+  background: var(--paper); border: 1px solid var(--editorial-line);
+  padding: 6px 0;
+}
+.chapter-toc-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  width: 100%; margin: 0; padding: 8px 14px;
+  border: 0; border-radius: 0; background: transparent;
+  color: var(--ink); text-align: left; cursor: pointer; font-weight: 400;
+}
+button.chapter-toc-item:hover:not(:disabled),
+button.chapter-toc-item:focus-visible { background: var(--selection); }
+.chapter-toc-label {
+  font-family: var(--font-display); font-style: italic; font-weight: 700;
+  font-size: 14px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chapter-toc-count {
+  font-family: var(--font-mono); font-size: 11px;
+  font-variant-numeric: tabular-nums; color: var(--ink-muted); flex-shrink: 0;
+}
 /* 新建钮：墨框方章，hover 反白 */
 .head-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 /* 长读切换：mono 小字钮，与检索范围切换同语系 */
@@ -323,6 +398,7 @@ button.primary:hover:not(:disabled) { background: var(--editorial-line); border-
   display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
   padding: 8px 0 10px;
   border-bottom: 1px solid var(--editorial-line);
+  scroll-margin-top: var(--ch-h, 76px);
 }
 .wall-group-head .g-label {
   font-family: var(--font-display); font-style: italic; font-weight: 700;
@@ -978,7 +1054,7 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
 }
 .mm-drawer-top h3 {
   margin: 0;
-  font-family: var(--font-display); font-size: 17px; line-height: 1.35;
+  font-family: var(--font-display); font-size: 18px; line-height: 1.35;
   color: var(--ink);
 }
 .mm-drawer-close {
@@ -1071,8 +1147,11 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
   display: block;
   height: 100%;
   background: var(--ember);
-  width: 0%;
-  transition: width var(--t-fast) var(--ease-out);
+  width: 100%;
+  /* scaleX 合成层动画：width 逐帧重排会 layout thrash */
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform var(--t-fast) var(--ease-out);
 }
 .mm-progress-frac {
   flex-shrink: 0;
@@ -1136,5 +1215,6 @@ code { background: var(--selection); padding: 1px 6px; font-size: 11px; font-fam
 
 /* ---------- 动效纪律 ---------- */
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+  /* transition 与 animation 一并静止：clue-pulse 等无限脉冲不得穿透该设置 */
+  * { transition: none !important; animation: none !important; }
 }

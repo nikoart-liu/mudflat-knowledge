@@ -22,10 +22,12 @@ const books: BookRow[] = [
   {
     id: 1, wereadBookId: 'w1', title: '置身事内', author: '兰小欢', cover: '',
     readingProgress: 0, noteCount: 3, reviewCount: 0, syncReviews: true, syncedAt: null,
+    pinned: false, category: '', recentCardAt: null,
   },
   {
     id: 2, wereadBookId: 'w2', title: '夜晚的潜水艇', author: '陈春成', cover: '',
     readingProgress: 0, noteCount: 2, reviewCount: 0, syncReviews: true, syncedAt: null,
+    pinned: false, category: '文学-散文杂著', recentCardAt: null,
   },
 ];
 

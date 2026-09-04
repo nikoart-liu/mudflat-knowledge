@@ -25,6 +25,8 @@ fn insert_demo_book(conn: &rusqlite::Connection, wid: &str, title: &str, texts: 
             reading_progress: 50,
             note_count: texts.len() as i64,
             review_count: 0,
+            wr_sort: None,
+            category: String::new(),
         },
     )
     .unwrap();
