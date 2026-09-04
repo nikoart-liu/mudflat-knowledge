@@ -137,6 +137,7 @@ struct ArtifactRow {
     user_edited: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_artifact(
     conn: &Connection,
     artifact_type: &str,
@@ -249,13 +250,13 @@ pub fn get_question_face(conn: &Connection, card: &CardRow) -> AiResult<Option<Q
     let Some(row) = latest_question_row(conn, card.id)? else {
         return Ok(None);
     };
-    if row.status == "stale" || row.input_hash != question_input_hash(card) {
-        if row.status == "accepted" || row.status == "proposed" {
-            conn.execute(
-                "UPDATE ai_artifacts SET status='stale', updated_at=updated_at WHERE id=?1 AND status<>'stale'",
-                [row.id],
-            )?;
-        }
+    if (row.status == "stale" || row.input_hash != question_input_hash(card))
+        && (row.status == "accepted" || row.status == "proposed")
+    {
+        conn.execute(
+            "UPDATE ai_artifacts SET status='stale', updated_at=updated_at WHERE id=?1 AND status<>'stale'",
+            [row.id],
+        )?;
     }
     let row = load_artifact(conn, row.id)?.ok_or_else(|| msg("问题面读取失败"))?;
     Ok(Some(to_question_face(row, &question_input_hash(card))?))
@@ -269,10 +270,10 @@ pub fn accepted_questions(conn: &Connection, card_ids: &[i64]) -> AiResult<Vec<Q
     let mut out = Vec::new();
     for c in cards {
         if let Some(face) = get_question_face(conn, &c)? {
-            if face.status == "accepted" || (face.status == "stale" && face.content.accepted_question.is_some()) {
-                if face.content.accepted_question.is_some() {
-                    out.push(face);
-                }
+            if face.content.accepted_question.is_some()
+                && (face.status == "accepted" || face.status == "stale")
+            {
+                out.push(face);
             }
         }
     }
@@ -303,7 +304,7 @@ pub fn accept_question(
             .ok_or_else(|| msg("没有可采用的问题"))?,
     };
     let q_len = question.chars().count();
-    if q_len < QUESTION_MIN || q_len > QUESTION_MAX + 24 {
+    if !(QUESTION_MIN..=QUESTION_MAX + 24).contains(&q_len) {
         return Err(msg("问题长度不合适"));
     }
     let user_edited = edited.map(str::trim).filter(|s| !s.is_empty()).is_some();
@@ -416,7 +417,7 @@ pub fn parse_question_response(raw: &str, source: &CardRow) -> AiResult<Question
             .trim()
             .to_string();
         let n = char_len(&q);
-        if n < QUESTION_MIN || n > QUESTION_MAX {
+        if !(QUESTION_MIN..=QUESTION_MAX).contains(&n) {
             continue;
         }
         let cmp = normalize_cmp(&q);
@@ -1024,7 +1025,7 @@ pub async fn run_embed_job(job: &EmbedJob) -> AiResult<Vec<(i64, String, Vec<f32
     Ok(job
         .items
         .iter()
-        .zip(vectors.into_iter())
+        .zip(vectors)
         .map(|((id, hash, _), vec)| (*id, hash.clone(), vec))
         .collect())
 }
@@ -1137,6 +1138,7 @@ pub fn cached_scaffold(conn: &Connection, card: &CardRow, pool: &[CardRow], rule
     Ok(None)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn store_scaffold(
     conn: &Connection,
     card: &CardRow,

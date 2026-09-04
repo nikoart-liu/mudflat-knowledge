@@ -283,7 +283,7 @@ fn sanitize_themes(
             continue;
         }
         let label_len = char_len(&n.label);
-        if label_len < LABEL_MIN || label_len > LABEL_MAX {
+        if !(LABEL_MIN..=LABEL_MAX).contains(&label_len) {
             warnings.push(format!("丢掉标题长度不合规的节点「{}」", warn_label(&n.label)));
             continue;
         }
@@ -396,7 +396,8 @@ pub fn system_prompt() -> &'static str {
 9. [星]、[想法]、有「注:」的卡提高成为主题中心和命名的权重，但节点文案仍是归纳。过短金句并入最近主题当证据，不单独占一个概要。"
 }
 
-pub fn user_prompt(title: &str, lines: &[String]) -> String {
+#[cfg(test)]
+fn user_prompt(title: &str, lines: &[String]) -> String {
     user_prompt_counted(title, lines, lines.len())
 }
 
@@ -468,10 +469,8 @@ pub fn parse_model_json(raw: &str) -> MindmapResult<Mindmap> {
     let mut v: serde_json::Value = serde_json::from_str(json)
         .map_err(|e| MindmapError::Msg(format!("无法解析模型 JSON: {e}")))?;
     // 允许模型只返回 root，或缺顶层字段
-    if v.get("root").is_none() {
-        if v.get("children").is_some() || v.get("kind").is_some() {
-            v = serde_json::json!({ "root": v });
-        }
+    if v.get("root").is_none() && (v.get("children").is_some() || v.get("kind").is_some()) {
+        v = serde_json::json!({ "root": v });
     }
     if v.get("title").is_none() {
         v["title"] = serde_json::json!("");

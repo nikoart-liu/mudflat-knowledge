@@ -2,6 +2,7 @@
 //!
 //! - 非密钥：`llm.json`（chat 与 embedding 可走不同供应商）
 //! - 密钥：`llm.key`、`llm.embedding.key`（0600，与 api.key 同一套原子写入）
+//!
 //! 默认关闭。http 只允许回环地址；其余必须 https。
 //! 向量可单独启用：主模型供应商（如 xAI）不必提供 embeddings。
 
@@ -516,10 +517,7 @@ pub fn load_runtime(dir: &Path) -> LlmResult<(LlmConfig, String)> {
             "还没有启用语言模型。到设置「四、语言模型」选择供应商并保存。".into(),
         ));
     }
-    let key = match get_key(dir) {
-        Ok(k) => k,
-        Err(_) => String::new(),
-    };
+    let key = get_key(dir).unwrap_or_default();
     require_key(cfg.provider, &cfg.base_url, &key)?;
     Ok((cfg, key))
 }
