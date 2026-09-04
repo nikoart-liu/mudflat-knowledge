@@ -30,11 +30,15 @@ cd src-tauri && cargo test   # 后端单元测试 + 数据层行为测试
 GitHub Actions 会在推送 `v*` 版本标签时构建 macOS（Apple Silicon / Intel）、Windows x64 与 Linux x64 安装包，并自动创建 GitHub Release。标签版本必须与 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 中的版本一致：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
+升级说明放在 `docs/releases/v*.md`，打 tag 时 GitHub Release 正文从对应文件读入。
+
 创建 Release 需要仓库允许 GitHub Actions 写入：Settings → Actions → General → Workflow permissions → Read and write permissions。若未开启，安装包仍会作为 workflow artifacts 保留，但不会出现在 GitHub Releases。
+
+已安装的客户端会对照 GitHub Releases 的 latest 判断是否有新版本：启动后静默检查，有更新时在刊头下提示；设置 → 关于里也可手动检查。确认后下载本机对应安装包并打开（macOS 为 dmg，Windows 为 NSIS，Linux 为 AppImage）。本地卡片在数据目录里，替换应用不会丢掉。
 
 Windows 安装包使用 NSIS（`.exe`），不生成 MSI：WiX 无法处理中文产品名。macOS 包使用 ad-hoc 签名但未经过 Apple 公证，Windows 包也未使用商业代码签名证书；首次安装时系统可能显示安全提示。正式对外分发前，应在仓库 Secrets 中配置对应平台的签名与公证凭据。
 
@@ -62,4 +66,5 @@ src-tauri/src/srs.rs    SM-2 简化调度（纯函数 + 单测）
 src-tauri/src/keystore.rs 本机 Key 文件读写（api.key，0600）
 src-tauri/src/llm.rs     语言模型供应商配置（llm.json + llm.key）
 src-tauri/src/mindmap.rs 按书划线归纳主题脑图（校验 + 生成 + 缓存）
+src-tauri/src/update.rs  GitHub Release 版本比较与安装包挑选
 ```

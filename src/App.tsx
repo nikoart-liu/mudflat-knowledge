@@ -26,6 +26,8 @@ import {
   type ReviewSettings,
   type SettingsInfo,
   type SetupStatus,
+  type UpdateEventPayload,
+  type UpdateInfo,
   type SrsState,
   type GradeResult,
   type SyncEventPayload,
@@ -176,6 +178,21 @@ const EMBEDDING_PROVIDERS: { key: LlmProvider; label: string; baseUrl: string; m
 const EXCLUDE_HINT_KEY = 'mudflat.exclude-hint-seen';
 const READING_MODE_KEY = 'mudflat.reading-mode';
 const COLLAPSED_CATS_KEY = 'mudflat.collapsed-cats';
+const UPDATE_DISMISS_KEY = 'mudflat.update-dismissed';
+
+function dismissedUpdateVersion(): string | null {
+  try { return localStorage.getItem(UPDATE_DISMISS_KEY); } catch { return null; }
+}
+
+function rememberDismissedUpdate(version: string) {
+  try { localStorage.setItem(UPDATE_DISMISS_KEY, version); } catch { /* 本地存储不可用时忽略 */ }
+}
+
+function clipNotes(s: string): string {
+  const t = s.replace(/\r\n/g, '\n').trim();
+  if (t.length <= 280) return t;
+  return `${t.slice(0, 280).trimEnd()}…`;
+}
 
 function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
@@ -357,6 +374,8 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const [chH, setChH] = useState(76);
   const lastViewRef = useRef<Exclude<View, { name: 'settings' }>>({ name: 'cards', bookId: null });
+  const [updateNotice, setUpdateNotice] = useState<UpdateInfo | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   const searching = !!query.trim();
   const hasKey = setup?.hasKey ?? false;
@@ -377,6 +396,33 @@ export default function App() {
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), action ? 4000 : 2600);
   }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      call<UpdateInfo>('check_for_update')
+        .then((info) => {
+          if (info.available && dismissedUpdateVersion() !== info.latestVersion) {
+            setUpdateNotice(info);
+          }
+        })
+        .catch(() => {});
+    }, 1600);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  const runInstallUpdate = useCallback(async () => {
+    setUpdateBusy(true);
+    try {
+      const chan = new Channel<UpdateEventPayload>();
+      const msg = await call<string>('install_update', { onProgress: chan });
+      setUpdateNotice(null);
+      showToast(msg);
+    } catch (e) {
+      showToast(explainError(e));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, [showToast]);
 
   const refreshMeta = useCallback(async () => {
     const [bookRows, tagRows, due, status] = await Promise.all([
@@ -983,6 +1029,33 @@ export default function App() {
           </button>
         </div>
       </header>
+      {updateNotice && (
+        <div className="update-bar" role="status">
+          <span>新版本 <strong>{updateNotice.latestVersion}</strong> 已发布</span>
+          <div className="update-bar-actions">
+            <button
+              className="primary"
+              disabled={updateBusy}
+              onClick={() => {
+                if (updateNotice.assetUrl) void runInstallUpdate();
+                else void openExternal(updateNotice.htmlUrl);
+              }}
+            >
+              {updateBusy ? '正在下载…' : (updateNotice.assetUrl ? '更新' : '查看发布页')}
+            </button>
+            <button
+              className="ghost"
+              disabled={updateBusy}
+              onClick={() => {
+                rememberDismissedUpdate(updateNotice.latestVersion);
+                setUpdateNotice(null);
+              }}
+            >
+              稍后
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="body">
         <aside className="sidebar">
@@ -3226,6 +3299,9 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
   const [embTesting, setEmbTesting] = useState(false);
   const [embResult, setEmbResult] = useState<string | null>(null);
   const [aiIndex, setAiIndex] = useState<AiIndexInfo | null>(null);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateBusy, setUpdateBusy] = useState<'check' | 'install' | null>(null);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
 
   const applySettings = (s: LlmSettings) => {
     setLlm(s);
@@ -3418,6 +3494,43 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       onToast(explainError(e));
     }
   };
+
+  const checkUpdate = async () => {
+    setUpdateBusy('check');
+    setUpdateMsg(null);
+    try {
+      const info = await call<UpdateInfo>('check_for_update');
+      setUpdate(info);
+      if (!info.available) setUpdateMsg('已是最新版本');
+    } catch (e) {
+      setUpdateMsg(`失败：${explainError(e)}`);
+    } finally {
+      setUpdateBusy(null);
+    }
+  };
+
+  const installNow = async () => {
+    setUpdateBusy('install');
+    setUpdateMsg(null);
+    try {
+      const chan = new Channel<UpdateEventPayload>();
+      chan.onmessage = (ev) => {
+        if (ev.stage === 'downloading' && ev.total > 0) {
+          const pct = Math.min(100, Math.round((ev.current / ev.total) * 100));
+          setUpdateMsg(`正在下载… ${pct}%`);
+        }
+      };
+      const msg = await call<string>('install_update', { onProgress: chan });
+      setUpdateMsg(msg);
+      onToast(msg);
+    } catch (e) {
+      setUpdateMsg(`失败：${explainError(e)}`);
+    } finally {
+      setUpdateBusy(null);
+    }
+  };
+
+  const updateNotes = update?.available ? clipNotes(update.notes) : '';
 
   return (
     <div className="settings">
@@ -3616,7 +3729,36 @@ export function SettingsView({ onToast, hasKey, onKeyChange }: {
       </section>
       <section>
         <h3>六、关于</h3>
+        <p className="hint">当前版本 {status?.appVersion ?? '…'}</p>
         <p className="hint">数据目录：{status?.dataDir ?? '未知'}（mudflat.db）</p>
+        {update?.available && (
+          <>
+            <p className="ok">有新版本 {update.latestVersion}</p>
+            {updateNotes ? <p className="hint update-notes">{updateNotes}</p> : null}
+          </>
+        )}
+        {updateMsg && (
+          <p className={updateMsg.startsWith('失败') ? 'err' : 'ok'}>{updateMsg}</p>
+        )}
+        <div className="row">
+          <button onClick={() => void checkUpdate()} disabled={updateBusy !== null}>
+            {updateBusy === 'check' ? '检查中…' : '检查更新'}
+          </button>
+          {update?.available && update.assetUrl && (
+            <button
+              className="primary"
+              onClick={() => void installNow()}
+              disabled={updateBusy !== null}
+            >
+              {updateBusy === 'install' ? '正在下载…' : '下载并安装'}
+            </button>
+          )}
+          {update?.available && (
+            <button className="ghost" onClick={() => void openExternal(update.htmlUrl)}>
+              查看发布页
+            </button>
+          )}
+        </div>
       </section>
     </div>
   );

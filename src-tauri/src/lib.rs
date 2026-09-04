@@ -6,6 +6,7 @@ mod llm;
 mod mindmap;
 pub mod srs;
 mod sync;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -67,6 +68,7 @@ fn get_setup_status(app: tauri::AppHandle, state: State<'_, Db>) -> Result<Setup
 pub struct Settings {
     pub last_full_sync: Option<i64>,
     pub data_dir: Option<String>,
+    pub app_version: String,
 }
 
 #[tauri::command]
@@ -76,7 +78,26 @@ fn get_settings(app: tauri::AppHandle, state: State<'_, Db>) -> Result<Settings,
         db::get_sync_meta(&conn, "last_full_sync").map_err(db_err)?
     };
     let data_dir = app.path().app_data_dir().ok().map(|p| p.to_string_lossy().into_owned());
-    Ok(Settings { last_full_sync: last.and_then(|v| v.parse().ok()), data_dir })
+    Ok(Settings {
+        last_full_sync: last.and_then(|v| v.parse().ok()),
+        data_dir,
+        app_version: app.package_info().version.to_string(),
+    })
+}
+
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<update::UpdateInfo, String> {
+    let current = app.package_info().version.to_string();
+    update::check_latest(&current).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    on_progress: tauri::ipc::Channel<update::UpdateEvent>,
+) -> Result<String, String> {
+    let current = app.package_info().version.to_string();
+    update::download_and_open(&current, on_progress).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -839,6 +860,8 @@ pub fn run() {
             test_embedding_connection,
             test_connection,
             open_external,
+            check_for_update,
+            install_update,
             sync_all,
             list_books,
             set_book_sync_reviews,

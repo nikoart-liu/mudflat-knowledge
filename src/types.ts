@@ -65,6 +65,23 @@ export interface SetupStatus {
 export interface SettingsInfo {
   lastFullSync: number | null;
   dataDir: string | null;
+  appVersion: string;
+}
+
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  available: boolean;
+  notes: string;
+  htmlUrl: string;
+  assetName: string | null;
+  assetUrl: string | null;
+}
+
+export interface UpdateEventPayload {
+  stage: string;
+  current: number;
+  total: number;
 }
 
 export interface SyncEventPayload {

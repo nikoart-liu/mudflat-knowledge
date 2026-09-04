@@ -97,6 +97,8 @@ beforeEach(() => {
         await delay(400);
         return [hit(lexical, 'lexical')];
       }
+      case 'check_for_update':
+        return { currentVersion: '0.1.0', latestVersion: '0.1.0', available: false, notes: '', htmlUrl: '', assetName: null, assetUrl: null };
       default:
         throw new Error(`测试未处理的命令: ${cmd}`);
     }

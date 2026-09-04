@@ -80,6 +80,8 @@ beforeEach(() => {
         return emptyLlmSettings();
       case 'get_mindmap_status':
         return { available: false, providerOff: true, cardCount: 0, cached: null, stale: false, chatEndpoint: null, model: null };
+      case 'check_for_update':
+        return { currentVersion: '0.1.0', latestVersion: '0.1.0', available: false, notes: '', htmlUrl: '', assetName: null, assetUrl: null };
       default:
         throw new Error(`测试未处理的命令: ${cmd}`);
     }

@@ -83,6 +83,20 @@ jobs:
       - name: Verify release version
         run: node .github/scripts/verify-release-version.mjs
 
+      - name: Read release notes
+        id: notes
+        run: |
+          file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$file" ]; then
+            echo "缺少升级说明: $file" >&2
+            exit 1
+          fi
+          {
+            echo 'body<<MUDFLAT_RELEASE_NOTES_EOF'
+            cat "$file"
+            echo MUDFLAT_RELEASE_NOTES_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build installers and publish release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -90,7 +104,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 滩涂拾遗 ${{ github.ref_name }}
-          releaseBody: 自动构建的 macOS、Windows 与 Linux 安装包。
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: false

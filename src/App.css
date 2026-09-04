@@ -112,6 +112,24 @@ a:focus-visible, summary:focus-visible, .wall-group-head:focus-visible {
 .search input::-webkit-search-cancel-button { -webkit-appearance: none; }
 .top-actions { display: flex; align-items: center; gap: 16px; margin-left: auto; }
 
+/* 新版本提示：刊头下一条栏线，不打断阅读 */
+.update-bar {
+  display: flex; align-items: center; gap: 16px;
+  height: 36px; padding: 0 24px; flex-shrink: 0;
+  background: var(--panel); border-bottom: 1px solid var(--hairline);
+  font-family: var(--font-mono); font-size: 12px; color: var(--ink);
+}
+.update-bar strong {
+  font-family: var(--font-display); font-size: 14px; font-weight: 700;
+  letter-spacing: 0;
+}
+.update-bar-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.update-bar-actions button { padding: 3px 10px; }
+.update-notes {
+  white-space: pre-wrap; max-height: 8em; overflow: auto;
+  margin-top: 8px;
+}
+
 /* 按钮体系：墨实底主动作 / 细边次动作 / ghost 弱化，全部直角 */
 button {
   border: 1px solid var(--ink); border-radius: 0;
